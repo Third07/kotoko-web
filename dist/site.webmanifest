@@ -4,8 +4,8 @@
   "description": "A private Filipino and Tagalog-dubbed media library.",
   "start_url": "/#/home",
   "display": "standalone",
-  "background_color": "#09070f",
-  "theme_color": "#09070f",
+  "background_color": "#050a11",
+  "theme_color": "#050a11",
   "icons": [
     {
       "src": "/favicon.svg",

@@ -5,19 +5,23 @@ import {
   ArrowLeft,
   Captions,
   Check,
+  ChevronLeft,
   ChevronRight,
   CircleAlert,
   Clapperboard,
+  Download,
   ExternalLink,
   Film,
   Home,
   Library,
   ListVideo,
+  Maximize,
   Play,
   Plus,
   RefreshCw,
   Search,
   Server,
+  SkipBack,
   SkipForward,
   Trash2,
   Tv,
@@ -27,14 +31,16 @@ import {
   createIcons
 } from "lucide";
 import { clearApiCache, getCatalog, getManifest, getMeta, getStreams, getSubtitles } from "./api";
-import { MediaPlayer, getStreamKind, streamDetail, streamLabel } from "./player";
+import { MediaPlayer, getDownloadInfo, getStreamKind, streamDetail, streamLabel } from "./player";
 import {
   clearHistory,
   getHistory,
   getLastStreamName,
+  getPlayerSettings,
   getWatchlist,
   isInWatchlist,
   saveProgress,
+  savePlayerSettings,
   setLastStreamName,
   toggleWatchlist
 } from "./storage";
@@ -49,19 +55,23 @@ const icons = {
   ArrowLeft,
   Captions,
   Check,
+  ChevronLeft,
   ChevronRight,
   CircleAlert,
   Clapperboard,
+  Download,
   ExternalLink,
   Film,
   Home,
   Library,
   ListVideo,
+  Maximize,
   Play,
   Plus,
   RefreshCw,
   Search,
   Server,
+  SkipBack,
   SkipForward,
   Trash2,
   Tv,
@@ -78,6 +88,10 @@ let currentStreams: StreamItem[] = [];
 let currentSubtitles: SubtitleItem[] = [];
 let currentStreamIndex = -1;
 let lastProgressSave = 0;
+let routeGeneration = 0;
+let playerRequestId = 0;
+let closingPlayer = false;
+const playerSettings = getPlayerSettings();
 const previewCache = new Map<string, MetaItem>();
 const catalogCache = new Map<string, MetaItem[]>();
 const player = new MediaPlayer();
@@ -101,8 +115,25 @@ function safeImageUrl(value?: string): string {
   }
 }
 
+function safeHttpsUrl(value?: string): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function mediaKey(type: string, id: string): string {
   return `${type}:${id}`;
+}
+
+function formatBytes(value?: number): string {
+  if (!value || !Number.isFinite(value) || value <= 0) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  return `${(value / 1024 ** index).toFixed(index > 2 ? 2 : 1)} ${units[index]}`;
 }
 
 function routeFor(meta: MetaItem): string {
@@ -129,6 +160,23 @@ function setNetworkBadge(online: boolean): void {
   refreshIcons();
 }
 
+function setActiveNavigation(route: { name: string; parts: string[] }): void {
+  const active =
+    route.name === "catalog" || route.name === "detail"
+      ? route.parts[1] === "movie"
+        ? "movies"
+        : route.parts[1] === "series"
+          ? "series"
+          : route.name
+      : route.name;
+  document.querySelectorAll<HTMLAnchorElement>("[data-nav]").forEach((link) => {
+    const selected = link.dataset.nav === active;
+    link.classList.toggle("is-active", selected);
+    if (selected) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  });
+}
+
 function renderShell(): void {
   root.innerHTML = `
     <header class="topbar">
@@ -150,15 +198,17 @@ function renderShell(): void {
     </header>
     <main id="main-content" tabindex="-1"></main>
     <nav class="mobile-nav" aria-label="Mobile navigation">
-      <a href="#/home"><i data-lucide="home"></i><span>Home</span></a>
-      <a href="#/search"><i data-lucide="search"></i><span>Search</span></a>
-      <a href="#/library"><i data-lucide="library"></i><span>Library</span></a>
+      <a href="#/home" data-nav="home"><i data-lucide="home"></i><span>Home</span></a>
+      <a href="#/catalog/movie/latest_movies" data-nav="movies"><i data-lucide="film"></i><span>Movies</span></a>
+      <a href="#/search" data-nav="search" class="mobile-search"><i data-lucide="search"></i><span>Search</span></a>
+      <a href="#/catalog/series/top_series" data-nav="series"><i data-lucide="tv"></i><span>Series</span></a>
+      <a href="#/library" data-nav="library"><i data-lucide="library"></i><span>Library</span></a>
     </nav>
     <dialog class="player-dialog" id="player-dialog" aria-labelledby="player-title">
       <div class="player-shell">
         <header class="player-header">
           <div>
-            <p class="eyebrow">Now playing</p>
+            <p class="eyebrow"><span class="live-dot"></span> Now playing <span class="player-status" id="player-status">Preparing</span></p>
             <h2 id="player-title">Loading…</h2>
             <p id="player-subtitle"></p>
           </div>
@@ -169,9 +219,19 @@ function renderShell(): void {
           <div class="player-state" id="player-state"><span class="spinner"></span><p>Finding playable sources…</p></div>
         </div>
         <div class="player-toolbar">
-          <div class="source-heading"><span><i data-lucide="server"></i> Sources</span><button type="button" class="text-button" data-action="try-next"><i data-lucide="skip-forward"></i> Try next</button></div>
+          <div class="player-command-bar">
+            <div class="episode-actions" aria-label="Episode navigation">
+              <button class="toolbar-button" id="previous-episode" type="button" data-action="previous-episode" disabled><i data-lucide="skip-back"></i><span>Previous</span></button>
+              <button class="toolbar-button" id="next-episode" type="button" data-action="next-episode" disabled><span>Next</span><i data-lucide="skip-forward"></i></button>
+            </div>
+            <div class="playback-actions">
+              <button class="toolbar-button" type="button" data-action="fullscreen"><i data-lucide="maximize"></i><span>Fullscreen</span></button>
+              <a class="toolbar-button download-button is-hidden" id="download-link" href="#" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" aria-disabled="true"><i data-lucide="download"></i><span>Download file</span></a>
+            </div>
+          </div>
+          <div class="source-heading"><span><i data-lucide="server"></i> Playback sources</span><button type="button" class="text-button" data-action="try-next"><i data-lucide="skip-forward"></i> Try next source</button></div>
           <div class="source-list" id="source-list"></div>
-          <p class="player-note"><i data-lucide="captions"></i> Subtitle availability comes from the installed add-on.</p>
+          <p class="player-note"><i data-lucide="captions"></i> Subtitles come from the add-on. Downloads appear only for direct media files and are handled by your browser.</p>
         </div>
       </div>
     </dialog>
@@ -208,6 +268,7 @@ function posterCard(meta: MetaItem, historyProgress?: number): string {
           ${poster ? `<img src="${poster}" alt="" loading="lazy" decoding="async" width="300" height="450" sizes="(max-width: 600px) 42vw, 190px" />` : `<div class="poster-fallback"><i data-lucide="film"></i></div>`}
           <span class="type-chip">${typeLabel}</span>
           ${typeof historyProgress === "number" ? `<span class="progress-track"><span style="width:${Math.round(historyProgress * 100)}%"></span></span>` : ""}
+          <span class="poster-open" aria-hidden="true"><i data-lucide="play"></i></span>
         </div>
         <h3>${escapeHtml(meta.name)}</h3>
         <p>${formatMetaLine(meta) || typeLabel}</p>
@@ -218,13 +279,14 @@ function posterCard(meta: MetaItem, historyProgress?: number): string {
 
 function renderRail(title: string, items: MetaItem[], catalog?: AddonCatalog): string {
   if (items.length === 0) return "";
+  const railId = `rail-${catalog?.type ?? "mixed"}-${(catalog?.id ?? title).replace(/[^a-z0-9_-]+/gi, "-")}`;
   const link = catalog
     ? `<a class="rail-link" href="#/catalog/${encodeURIComponent(catalog.type)}/${encodeURIComponent(catalog.id)}">See all <i data-lucide="chevron-right"></i></a>`
     : "";
   return `
     <section class="rail-section">
-      <div class="section-heading"><div><p class="eyebrow">Kotoko selection</p><h2>${escapeHtml(title)}</h2></div>${link}</div>
-      <div class="poster-rail">${items.map((item) => posterCard(item)).join("")}</div>
+      <div class="section-heading"><div><p class="eyebrow">Kotoko selection</p><h2>${escapeHtml(title)}</h2></div><div class="rail-tools"><div class="rail-buttons" aria-label="Scroll ${escapeHtml(title)}"><button class="rail-button" type="button" data-action="scroll-rail" data-target="${escapeHtml(railId)}" data-direction="-1" aria-label="Scroll ${escapeHtml(title)} left"><i data-lucide="chevron-left"></i></button><button class="rail-button" type="button" data-action="scroll-rail" data-target="${escapeHtml(railId)}" data-direction="1" aria-label="Scroll ${escapeHtml(title)} right"><i data-lucide="chevron-right"></i></button></div>${link}</div></div>
+      <div class="poster-rail" id="${escapeHtml(railId)}">${items.map((item) => posterCard(item)).join("")}</div>
     </section>
   `;
 }
@@ -243,11 +305,11 @@ function heroMarkup(meta: MetaItem): string {
         <div class="hero-actions">
           <a class="primary-button" href="${routeFor(meta)}"><i data-lucide="play"></i> View details</a>
           <button class="secondary-button" type="button" data-action="toggle-watchlist" data-type="${meta.type}" data-id="${escapeHtml(meta.id)}">
-            <i data-lucide="${isInWatchlist(meta.id) ? "check" : "plus"}"></i>${isInWatchlist(meta.id) ? "In my list" : "My list"}
+            <i data-lucide="${isInWatchlist(meta.id, meta.type) ? "check" : "plus"}"></i>${isInWatchlist(meta.id, meta.type) ? "In my list" : "My list"}
           </button>
         </div>
       </div>
-      <div class="broadcast-stamp"><strong>PIN</strong><span>Curated screen</span></div>
+      <div class="program-ticket" aria-hidden="true"><span>Now showing</span><strong>${meta.type === "series" ? "Series" : "Film"}</strong><small>${escapeHtml(String(meta.releaseInfo || meta.year || "Kotoko"))}</small></div>
     </section>
   `;
 }
@@ -269,7 +331,7 @@ async function loadCatalog(catalog: AddonCatalog, skip = 0): Promise<MetaItem[]>
   return items;
 }
 
-async function renderHome(): Promise<void> {
+async function renderHome(generation: number): Promise<void> {
   const main = mainElement();
   main.innerHTML = `
     <section class="hero hero-skeleton"><span class="spinner"></span></section>
@@ -278,12 +340,14 @@ async function renderHome(): Promise<void> {
 
   if (!manifest) return;
   const results = await Promise.allSettled(manifest.catalogs.map((catalog) => loadCatalog(catalog, 0)));
+  if (generation !== routeGeneration) return;
   const loaded = manifest.catalogs.map((catalog, index) => ({
     catalog,
     items: results[index]?.status === "fulfilled" ? results[index].value : []
   }));
   const hero = loaded.find((entry) => entry.items.length > 0)?.items[0];
   const history = getHistory();
+  const failedCatalogs = results.filter((result) => result.status === "rejected").length;
 
   if (!hero) {
     renderErrorState("This screen did not load", "The add-on catalogs returned no titles.", true);
@@ -297,7 +361,10 @@ async function renderHome(): Promise<void> {
         .join("")}</div></section>`
     : "";
 
-  main.innerHTML = `${heroMarkup(hero)}${continueRail}${loaded
+  const catalogNotice = failedCatalogs
+    ? `<aside class="catalog-notice"><span><i data-lucide="circle-alert"></i><strong>${failedCatalogs} ${failedCatalogs === 1 ? "catalog is" : "catalogs are"} temporarily unavailable.</strong> Everything else is ready.</span><button class="text-button" type="button" data-action="retry">Retry</button></aside>`
+    : "";
+  main.innerHTML = `${heroMarkup(hero)}${catalogNotice}${continueRail}${loaded
     .map(({ catalog, items }) => renderRail(catalog.name, items, catalog))
     .join("")}`;
   applyBackdrops();
@@ -321,7 +388,7 @@ function findCatalog(type: string, id: string): AddonCatalog | undefined {
   return manifest?.catalogs.find((catalog) => catalog.type === type && catalog.id === id);
 }
 
-async function renderCatalog(type: string, id: string): Promise<void> {
+async function renderCatalog(type: string, id: string, generation: number): Promise<void> {
   const catalog = findCatalog(type, id);
   if (!catalog) {
     renderErrorState("Catalog not found", "This catalog is not part of the installed add-on.");
@@ -332,6 +399,7 @@ async function renderCatalog(type: string, id: string): Promise<void> {
   refreshIcons();
   try {
     const items = await loadCatalog(catalog, 0);
+    if (generation !== routeGeneration) return;
     main.innerHTML = `
       <section class="page">
         <div class="page-heading"><a href="#/home" class="back-link"><i data-lucide="arrow-left"></i> Home</a><p class="eyebrow">${escapeHtml(catalog.type)}</p><h1>${escapeHtml(catalog.name)}</h1><p>${items.length} titles loaded</p></div>
@@ -398,9 +466,9 @@ function episodeLabel(video: VideoItem): string {
 function detailMarkup(meta: MetaItem): string {
   const backdrop = safeImageUrl(meta.background || meta.poster);
   const poster = safeImageUrl(meta.poster);
-  const watchlisted = isInWatchlist(meta.id);
+  const watchlisted = isInWatchlist(meta.id, meta.type);
   const videos = airedVideos(meta.videos);
-  const historyVideo = getHistory().find((entry) => entry.meta.id === meta.id)?.videoId;
+  const historyVideo = getHistory().find((entry) => entry.meta.id === meta.id && entry.meta.type === meta.type)?.videoId;
   const seasons = [...new Set(videos.map((video) => parseEpisodeNumbers(video).season))].filter((season) => season > 0).sort((a, b) => a - b);
   const selectedSeason = videos.find((video) => video.id === historyVideo)
     ? parseEpisodeNumbers(videos.find((video) => video.id === historyVideo)!).season
@@ -445,29 +513,65 @@ function detailMarkup(meta: MetaItem): string {
 
 function episodePreview(video: VideoItem): string {
   const thumb = safeImageUrl(video.thumbnail);
-  return `<article class="episode-preview">${thumb ? `<img src="${thumb}" alt="" loading="lazy" width="320" height="180" />` : `<div class="episode-placeholder"><i data-lucide="tv"></i></div>`}<div><p class="eyebrow">${escapeHtml(episodeLabel(video))}</p><h3>${escapeHtml(video.title || video.name || `Episode ${parseEpisodeNumbers(video).episode}`)}</h3><p>${escapeHtml(video.overview || (video.released ? `Aired ${new Date(video.released).toLocaleDateString()}` : "Ready to play"))}</p></div></article>`;
+  const airDateLabel = video.released && !Number.isNaN(Date.parse(video.released))
+    ? `Aired ${new Date(video.released).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}`
+    : "Air date unavailable";
+  return `<article class="episode-preview">${thumb ? `<img src="${thumb}" alt="" loading="lazy" width="320" height="180" />` : `<div class="episode-placeholder"><i data-lucide="tv"></i></div>`}<div><p class="eyebrow">${escapeHtml(episodeLabel(video))}</p><h3>${escapeHtml(video.title || video.name || `Episode ${parseEpisodeNumbers(video).episode}`)}</h3><p class="episode-date">${escapeHtml(airDateLabel)}</p><p class="episode-overview">${escapeHtml(video.overview || "No episode summary is available yet.")}</p></div></article>`;
 }
 
-async function renderDetail(type: string, id: string): Promise<void> {
+async function renderDetail(type: string, id: string, generation: number): Promise<void> {
   const preview = previewCache.get(mediaKey(type, id));
   const main = mainElement();
+  let meta: MetaItem;
   main.innerHTML = `<section class="detail-loading"><span class="spinner"></span><p>Loading details…</p></section>`;
   try {
-    currentMeta = await getMeta(type, id);
+    meta = await getMeta(type, id);
   } catch (error) {
     if (!preview) {
+      if (generation !== routeGeneration) return;
       renderErrorState("Details unavailable", error instanceof Error ? error.message : "This title could not be loaded.");
       return;
     }
-    currentMeta = preview;
+    meta = preview;
     toast("Showing catalog details; full metadata is unavailable.");
   }
-  main.innerHTML = detailMarkup(currentMeta);
+  if (generation !== routeGeneration) return;
+  currentMeta = meta;
+  main.innerHTML = detailMarkup(meta);
   applyBackdrops();
   refreshIcons();
 }
 
-async function renderSearch(query: string): Promise<void> {
+type SearchType = "all" | "movie" | "series";
+type SearchSort = "relevance" | "newest" | "rating" | "title";
+
+function searchControls(query: string, type: SearchType, sort: SearchSort): string {
+  const filters: Array<{ value: SearchType; label: string }> = [
+    { value: "all", label: "All" },
+    { value: "movie", label: "Movies" },
+    { value: "series", label: "Series" }
+  ];
+  return `<div class="search-controls"><div class="filter-chips" aria-label="Filter search results">${filters
+    .map(({ value, label }) => {
+      const params = new URLSearchParams({ q: query });
+      if (value !== "all") params.set("type", value);
+      if (sort !== "relevance") params.set("sort", sort);
+      return `<a href="#/search?${params.toString()}" class="filter-chip ${value === type ? "is-active" : ""}" ${value === type ? 'aria-current="true"' : ""}>${label}</a>`;
+    })
+    .join("")}</div><label class="sort-control"><span>Sort</span><select id="search-sort"><option value="relevance" ${sort === "relevance" ? "selected" : ""}>Best match</option><option value="newest" ${sort === "newest" ? "selected" : ""}>Newest</option><option value="rating" ${sort === "rating" ? "selected" : ""}>Highest rated</option><option value="title" ${sort === "title" ? "selected" : ""}>Title A–Z</option></select></label></div>`;
+}
+
+function metaYear(meta: MetaItem): number {
+  const match = String(meta.releaseInfo || meta.year || "").match(/\d{4}/);
+  return match ? Number(match[0]) : 0;
+}
+
+function setSearchSortValue(sort: SearchSort): void {
+  const select = document.querySelector<HTMLSelectElement>("#search-sort");
+  if (select) select.value = sort;
+}
+
+async function renderSearch(query: string, type: SearchType, sort: SearchSort, generation: number): Promise<void> {
   const main = mainElement();
   const input = document.querySelector<HTMLInputElement>("#search-input");
   if (input) input.value = query;
@@ -477,11 +581,14 @@ async function renderSearch(query: string): Promise<void> {
     return;
   }
 
-  main.innerHTML = `<section class="page"><div class="page-heading"><p class="eyebrow">Searching every catalog</p><h1>Results for “${escapeHtml(query)}”</h1></div><div class="poster-grid">${skeletonCards(10)}</div></section>`;
+  main.innerHTML = `<section class="page"><div class="page-heading"><p class="eyebrow">Searching every catalog</p><h1>Results for “${escapeHtml(query)}”</h1>${searchControls(query, type, sort)}</div><div class="poster-grid">${skeletonCards(10)}</div></section>`;
+  setSearchSortValue(sort);
   if (!manifest) return;
 
-  const tasks = manifest.catalogs.flatMap((catalog) => [0, 20, 40].map((skip) => loadCatalog(catalog, skip)));
+  const catalogs = type === "all" ? manifest.catalogs : manifest.catalogs.filter((catalog) => catalog.type === type);
+  const tasks = catalogs.flatMap((catalog) => [0, 20, 40].map((skip) => loadCatalog(catalog, skip)));
   const settled = await Promise.allSettled(tasks);
+  if (generation !== routeGeneration) return;
   const unique = new Map<string, MetaItem>();
   for (const result of settled) {
     if (result.status !== "fulfilled") continue;
@@ -489,7 +596,16 @@ async function renderSearch(query: string): Promise<void> {
   }
   const normalized = query.trim().toLocaleLowerCase();
   const matches = [...unique.values()].filter((item) => item.name.toLocaleLowerCase().includes(normalized));
-  main.innerHTML = `<section class="page"><div class="page-heading"><p class="eyebrow">${matches.length} matches</p><h1>Results for “${escapeHtml(query)}”</h1><p>Search covers the first 60 titles from each installed catalog.</p></div>${matches.length ? `<div class="poster-grid">${matches.map((item) => posterCard(item)).join("")}</div>` : `<div class="empty-state"><h2>No matching title</h2><p>Try a shorter title or browse a catalog from Home.</p></div>`}</section>`;
+  matches.sort((a, b) => {
+    if (sort === "newest") return metaYear(b) - metaYear(a) || a.name.localeCompare(b.name);
+    if (sort === "rating") return Number(b.imdbRating || 0) - Number(a.imdbRating || 0) || a.name.localeCompare(b.name);
+    if (sort === "title") return a.name.localeCompare(b.name);
+    const aName = a.name.toLocaleLowerCase();
+    const bName = b.name.toLocaleLowerCase();
+    return aName.indexOf(normalized) - bName.indexOf(normalized) || aName.localeCompare(bName);
+  });
+  main.innerHTML = `<section class="page"><div class="page-heading"><p class="eyebrow">${matches.length} ${matches.length === 1 ? "match" : "matches"}</p><h1>Results for “${escapeHtml(query)}”</h1><p>Search covers the first 60 titles from each matching catalog.</p>${searchControls(query, type, sort)}</div>${matches.length ? `<div class="poster-grid">${matches.map((item) => posterCard(item)).join("")}</div>` : `<div class="empty-state"><h2>No matching title</h2><p>Try a shorter title or browse a catalog from Home.</p></div>`}</section>`;
+  setSearchSortValue(sort);
   refreshIcons();
 }
 
@@ -517,14 +633,27 @@ function parseRoute(): { name: string; parts: string[]; query: URLSearchParams }
 }
 
 async function renderRoute(): Promise<void> {
+  const generation = ++routeGeneration;
   window.scrollTo({ top: 0, behavior: "auto" });
   const route = parseRoute();
   document.body.dataset.route = route.name;
+  setActiveNavigation(route);
+  if (route.name !== "search") {
+    const searchInput = document.querySelector<HTMLInputElement>("#search-input");
+    if (searchInput) searchInput.value = "";
+  }
   if (!manifest) return;
-  if (route.name === "home") await renderHome();
-  else if (route.name === "catalog" && route.parts[1] && route.parts[2]) await renderCatalog(route.parts[1], route.parts[2]);
-  else if (route.name === "detail" && route.parts[1] && route.parts[2]) await renderDetail(route.parts[1], route.parts[2]);
-  else if (route.name === "search") await renderSearch(route.query.get("q") ?? "");
+  if (route.name === "home") await renderHome(generation);
+  else if (route.name === "catalog" && route.parts[1] && route.parts[2]) await renderCatalog(route.parts[1], route.parts[2], generation);
+  else if (route.name === "detail" && route.parts[1] && route.parts[2]) await renderDetail(route.parts[1], route.parts[2], generation);
+  else if (route.name === "search") {
+    const typeValue = route.query.get("type");
+    const sortValue = route.query.get("sort");
+    const type: SearchType = typeValue === "movie" || typeValue === "series" ? typeValue : "all";
+    const sort: SearchSort =
+      sortValue === "newest" || sortValue === "rating" || sortValue === "title" ? sortValue : "relevance";
+    await renderSearch(route.query.get("q") ?? "", type, sort, generation);
+  }
   else if (route.name === "library") renderLibrary();
   else renderErrorState("Page not found", "That screen does not exist.");
 }
@@ -564,11 +693,114 @@ function playerDialog(): HTMLDialogElement {
   return dialog;
 }
 
+function setPlayerStatus(label: string, tone: "neutral" | "good" | "warning" = "neutral"): void {
+  const status = document.querySelector<HTMLElement>("#player-status");
+  if (!status) return;
+  status.textContent = label;
+  status.dataset.tone = tone;
+}
+
+function episodeSequence(): VideoItem[] {
+  return airedVideos(currentMeta?.videos).sort((a, b) => {
+    const first = parseEpisodeNumbers(a);
+    const second = parseEpisodeNumbers(b);
+    return first.season - second.season || first.episode - second.episode;
+  });
+}
+
+function updatePlayerEpisodeButtons(): void {
+  const episodes = currentMeta?.type === "series" ? episodeSequence() : [];
+  const index = episodes.findIndex((video) => video.id === currentVideoId);
+  const previous = document.querySelector<HTMLButtonElement>("#previous-episode");
+  const next = document.querySelector<HTMLButtonElement>("#next-episode");
+  if (previous) {
+    previous.disabled = index <= 0;
+    previous.title = index > 0 ? `Play ${episodeLabel(episodes[index - 1]!)}` : "No previous episode";
+  }
+  if (next) {
+    next.disabled = index < 0 || index >= episodes.length - 1;
+    next.title = index >= 0 && index < episodes.length - 1 ? `Play ${episodeLabel(episodes[index + 1]!)}` : "No next episode";
+  }
+  if ("mediaSession" in navigator) {
+    try {
+      navigator.mediaSession.setActionHandler("previoustrack", index > 0 ? () => void playAdjacentEpisode(-1) : null);
+      navigator.mediaSession.setActionHandler(
+        "nexttrack",
+        index >= 0 && index < episodes.length - 1 ? () => void playAdjacentEpisode(1) : null
+      );
+    } catch {
+      // Some browsers expose Media Session but not every action handler.
+    }
+  }
+}
+
+function syncEpisodeControls(videoId: string): void {
+  const episode = airedVideos(currentMeta?.videos).find((video) => video.id === videoId);
+  if (!episode) return;
+  const numbers = parseEpisodeNumbers(episode);
+  const seasonSelect = document.querySelector<HTMLSelectElement>("#season-select");
+  if (seasonSelect && Number(seasonSelect.value) !== numbers.season) {
+    seasonSelect.value = String(numbers.season);
+    updateEpisodeOptions(numbers.season);
+  }
+  const episodeSelect = document.querySelector<HTMLSelectElement>("#episode-select");
+  if (episodeSelect) episodeSelect.value = videoId;
+  updateEpisodePreview(videoId);
+}
+
+function updateDownloadLink(stream?: StreamItem): void {
+  const link = document.querySelector<HTMLAnchorElement>("#download-link");
+  if (!link) return;
+  const download = stream ? getDownloadInfo(stream) : null;
+  link.classList.toggle("is-hidden", !download);
+  link.setAttribute("aria-disabled", String(!download));
+  if (!download) {
+    link.href = "#";
+    link.removeAttribute("download");
+    link.title = "This source is not a direct downloadable media file";
+    return;
+  }
+  link.href = download.url;
+  link.download = download.filename;
+  link.title = `${download.filename}${download.size ? ` · ${formatBytes(download.size)}` : ""}`;
+}
+
+function saveCurrentProgress(): void {
+  const video = document.querySelector<HTMLVideoElement>("#video");
+  if (!video || !currentMeta || !currentVideoId) return;
+  saveProgress({
+    meta: { ...currentMeta, videos: undefined },
+    videoId: currentVideoId,
+    episodeLabel: currentEpisodeLabel,
+    currentTime: video.currentTime,
+    duration: video.duration || 0,
+    updatedAt: Date.now()
+  });
+}
+
 async function openPlayer(videoId: string): Promise<void> {
   if (!currentMeta || !videoId) return;
+  const requestId = ++playerRequestId;
+  saveCurrentProgress();
+  player.destroy();
+  const videoElement = document.querySelector<HTMLVideoElement>("#video");
+  if (videoElement) {
+    videoElement.pause();
+    videoElement.removeAttribute("src");
+    videoElement.load();
+  }
   currentVideoId = videoId;
   const episode = airedVideos(currentMeta.videos).find((video) => video.id === videoId);
   currentEpisodeLabel = episode ? episodeLabel(episode) : "";
+  if ("mediaSession" in navigator && typeof MediaMetadata !== "undefined") {
+    const artwork = safeHttpsUrl(currentMeta.poster);
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: currentMeta.name,
+      artist: currentEpisodeLabel || (currentMeta.type === "series" ? "Kotoko series" : "Kotoko film"),
+      album: "Kotoko — Pinoy screen",
+      artwork: artwork ? [{ src: artwork }] : []
+    });
+  }
   const title = document.querySelector<HTMLElement>("#player-title");
   const subtitle = document.querySelector<HTMLElement>("#player-subtitle");
   const state = document.querySelector<HTMLElement>("#player-state");
@@ -577,6 +809,10 @@ async function openPlayer(videoId: string): Promise<void> {
   if (subtitle) subtitle.textContent = currentEpisodeLabel;
   if (state) state.innerHTML = `<span class="spinner"></span><p>Finding playable sources…</p>`;
   if (list) list.innerHTML = "";
+  setPlayerStatus("Finding sources");
+  updateDownloadLink();
+  syncEpisodeControls(videoId);
+  updatePlayerEpisodeButtons();
   const dialog = playerDialog();
   if (!dialog.open) dialog.showModal();
   document.body.classList.add("player-open");
@@ -588,6 +824,7 @@ async function openPlayer(videoId: string): Promise<void> {
     ]);
     currentStreams = streamsResult.status === "fulfilled" ? streamsResult.value : [];
     currentSubtitles = subtitlesResult.status === "fulfilled" ? subtitlesResult.value : [];
+    if (requestId !== playerRequestId || !dialog.open) return;
     if (currentStreams.length === 0) throw new Error("The add-on returned no sources for this title.");
     renderSourceList(currentStreams);
     const remembered = getLastStreamName();
@@ -597,11 +834,14 @@ async function openPlayer(videoId: string): Promise<void> {
     const firstDirect = currentStreams.findIndex((stream) => getStreamKind(stream) === "direct");
     const index = preferredIndex >= 0 ? preferredIndex : firstDirect;
     if (index < 0) {
+      setPlayerStatus("No web source", "warning");
       showPlayerMessage("No direct browser stream", "This result only contains torrent, app-only or external sources.");
       return;
     }
     await selectStream(index);
   } catch (error) {
+    if (requestId !== playerRequestId) return;
+    setPlayerStatus("Unavailable", "warning");
     showPlayerMessage("Playback unavailable", error instanceof Error ? error.message : "No stream could be loaded.");
   }
 }
@@ -613,7 +853,8 @@ function renderSourceList(streams: StreamItem[]): void {
     .map((stream, index) => {
       const kind = getStreamKind(stream);
       const detail = streamDetail(stream);
-      return `<button class="source-button" type="button" data-action="select-source" data-index="${index}" data-kind="${kind}"><span><strong>${escapeHtml(streamLabel(stream, index))}</strong>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</span><em>${kind === "direct" ? "Web" : kind}</em></button>`;
+      const badge = kind === "direct" ? (getDownloadInfo(stream) ? "File" : "Web") : kind === "external" ? "Open" : kind === "torrent" ? "App" : kind;
+      return `<button class="source-button ${kind === "direct" ? "" : "is-limited"}" type="button" data-action="select-source" data-index="${index}" data-kind="${kind}"><span><strong>${escapeHtml(streamLabel(stream, index))}</strong>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</span><em>${escapeHtml(badge)}</em></button>`;
     })
     .join("");
   refreshIcons();
@@ -623,7 +864,8 @@ function showPlayerMessage(title: string, detail: string): void {
   const state = document.querySelector<HTMLElement>("#player-state");
   if (!state) return;
   state.classList.add("is-visible");
-  state.innerHTML = `<span class="error-icon small"><i data-lucide="circle-alert"></i></span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(detail)}</p>`;
+  const hasDirectSource = currentStreams.some((stream) => getStreamKind(stream) === "direct");
+  state.innerHTML = `<span class="error-icon small"><i data-lucide="circle-alert"></i></span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(detail)}</p>${hasDirectSource ? `<div class="player-state-actions"><button class="secondary-button" type="button" data-action="retry-source"><i data-lucide="refresh-cw"></i> Retry</button><button class="primary-button" type="button" data-action="try-next"><i data-lucide="skip-forward"></i> Next source</button></div>` : ""}`;
   refreshIcons();
 }
 
@@ -632,7 +874,13 @@ async function selectStream(index: number): Promise<void> {
   if (!stream || !currentMeta) return;
   const kind = getStreamKind(stream);
   if (kind === "external" && stream.externalUrl) {
-    window.open(stream.externalUrl, "_blank", "noopener,noreferrer");
+    try {
+      const target = new URL(stream.externalUrl);
+      if (target.protocol !== "https:") throw new Error("External links must use HTTPS.");
+      window.open(target.href, "_blank", "noopener,noreferrer");
+    } catch {
+      showPlayerMessage("Unsafe external link", "This source returned an invalid or insecure destination.");
+    }
     return;
   }
   if (kind !== "direct") {
@@ -641,10 +889,12 @@ async function selectStream(index: number): Promise<void> {
   }
 
   currentStreamIndex = index;
+  setPlayerStatus(`Source ${index + 1} of ${currentStreams.length}`);
   document.querySelectorAll<HTMLElement>(".source-button").forEach((button) =>
     button.classList.toggle("is-active", Number(button.dataset.index) === index)
   );
   setLastStreamName(streamLabel(stream, index));
+  updateDownloadLink(stream);
   const state = document.querySelector<HTMLElement>("#player-state");
   if (state) {
     state.classList.remove("is-visible");
@@ -652,7 +902,12 @@ async function selectStream(index: number): Promise<void> {
   }
   const video = document.querySelector<HTMLVideoElement>("#video");
   if (!video) return;
-  const history = getHistory().find((entry) => entry.meta.id === currentMeta?.id && entry.videoId === currentVideoId);
+  video.volume = playerSettings.volume;
+  video.muted = playerSettings.muted;
+  video.playbackRate = playerSettings.playbackRate;
+  const history = getHistory().find(
+    (entry) => entry.meta.id === currentMeta?.id && entry.meta.type === currentMeta?.type && entry.videoId === currentVideoId
+  );
   const subtitles = stream.subtitles?.length ? stream.subtitles : currentSubtitles;
   try {
     await player.attach(
@@ -672,9 +927,20 @@ async function selectStream(index: number): Promise<void> {
           updatedAt: Date.now()
         });
       },
-      (message) => showPlayerMessage("Source failed", message)
+      (message) => {
+        setPlayerStatus("Source failed", "warning");
+        showPlayerMessage("Source failed", message);
+      },
+      (status) => {
+        if (status === "playing") setPlayerStatus(`Playing source ${index + 1}`, "good");
+        else if (status === "buffering") setPlayerStatus("Buffering", "warning");
+        else if (status === "paused") setPlayerStatus("Paused");
+        else if (status === "ended") setPlayerStatus("Finished", "good");
+        else setPlayerStatus("Loading video");
+      }
     );
   } catch (error) {
+    setPlayerStatus("Unavailable", "warning");
     showPlayerMessage("Source unavailable", error instanceof Error ? error.message : "This source cannot be played.");
   }
 }
@@ -691,7 +957,33 @@ async function tryNextSource(): Promise<void> {
   showPlayerMessage("No other web source", "The remaining sources require a native app.");
 }
 
+async function playAdjacentEpisode(direction: -1 | 1): Promise<void> {
+  const episodes = episodeSequence();
+  const index = episodes.findIndex((video) => video.id === currentVideoId);
+  const target = episodes[index + direction];
+  if (!target) return;
+  await openPlayer(target.id);
+}
+
+async function enterFullscreen(): Promise<void> {
+  const video = document.querySelector<HTMLVideoElement>("#video");
+  if (!video) return;
+  try {
+    if (video.requestFullscreen) await video.requestFullscreen();
+    else {
+      const iosVideo = video as HTMLVideoElement & { webkitEnterFullscreen?: () => void };
+      iosVideo.webkitEnterFullscreen?.();
+    }
+  } catch {
+    toast("Fullscreen is unavailable in this browser");
+  }
+}
+
 function closePlayer(): void {
+  if (closingPlayer) return;
+  closingPlayer = true;
+  playerRequestId += 1;
+  saveCurrentProgress();
   player.destroy();
   const video = document.querySelector<HTMLVideoElement>("#video");
   if (video) {
@@ -699,15 +991,50 @@ function closePlayer(): void {
     video.removeAttribute("src");
     video.load();
   }
-  playerDialog().close();
+  const dialog = playerDialog();
+  if (dialog.open) dialog.close();
   document.body.classList.remove("player-open");
   currentStreams = [];
   currentSubtitles = [];
   currentStreamIndex = -1;
+  updateDownloadLink();
+  setPlayerStatus("Closed");
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.metadata = null;
+    try {
+      navigator.mediaSession.setActionHandler("previoustrack", null);
+      navigator.mediaSession.setActionHandler("nexttrack", null);
+    } catch {
+      // Media Session actions are optional across browsers.
+    }
+  }
+  closingPlayer = false;
+}
+
+function setupPlayerEvents(): void {
+  const dialog = playerDialog();
+  const video = document.querySelector<HTMLVideoElement>("#video");
+  dialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closePlayer();
+  });
+  dialog.addEventListener("close", () => {
+    if (document.body.classList.contains("player-open")) closePlayer();
+  });
+  video?.addEventListener("volumechange", () => {
+    playerSettings.volume = video.volume;
+    playerSettings.muted = video.muted;
+    savePlayerSettings(playerSettings);
+  });
+  video?.addEventListener("ratechange", () => {
+    playerSettings.playbackRate = video.playbackRate;
+    savePlayerSettings(playerSettings);
+  });
 }
 
 async function initialize(): Promise<void> {
   renderShell();
+  setupPlayerEvents();
   setNetworkBadge(navigator.onLine);
   mainElement().innerHTML = `<section class="boot-screen"><span class="brand-mark large"><span>K</span></span><span class="spinner"></span><p>Opening your screen…</p></section>`;
   try {
@@ -730,6 +1057,10 @@ root.addEventListener("click", (event) => {
     catalogCache.clear();
     void initialize();
   } else if (action === "load-more") void loadMore(button);
+  else if (action === "scroll-rail") {
+    const rail = document.getElementById(button.dataset.target ?? "");
+    rail?.scrollBy({ left: rail.clientWidth * 0.82 * Number(button.dataset.direction ?? "1"), behavior: "smooth" });
+  }
   else if (action === "toggle-watchlist") {
     const meta = currentMeta?.id === button.dataset.id
       ? currentMeta
@@ -739,13 +1070,17 @@ root.addEventListener("click", (event) => {
     toast(added ? "Added to My list" : "Removed from My list");
     if (parseRoute().name === "library") renderLibrary();
     else if (parseRoute().name === "detail") mainElement().innerHTML = detailMarkup(meta);
-    else void renderHome();
+    else void renderRoute();
     applyBackdrops();
     refreshIcons();
   } else if (action === "play") void openPlayer(button.dataset.videoId ?? "");
   else if (action === "close-player") closePlayer();
   else if (action === "select-source") void selectStream(Number(button.dataset.index ?? "-1"));
   else if (action === "try-next") void tryNextSource();
+  else if (action === "retry-source" && currentStreamIndex >= 0) void selectStream(currentStreamIndex);
+  else if (action === "previous-episode") void playAdjacentEpisode(-1);
+  else if (action === "next-episode") void playAdjacentEpisode(1);
+  else if (action === "fullscreen") void enterFullscreen();
   else if (action === "clear-history") {
     clearHistory();
     renderLibrary();
@@ -757,6 +1092,12 @@ root.addEventListener("change", (event) => {
   const target = event.target as HTMLSelectElement;
   if (target.id === "season-select") updateEpisodeOptions(Number(target.value));
   if (target.id === "episode-select") updateEpisodePreview(target.value);
+  if (target.id === "search-sort") {
+    const route = parseRoute();
+    route.query.set("sort", target.value);
+    if (target.value === "relevance") route.query.delete("sort");
+    location.hash = `#/search?${route.query.toString()}`;
+  }
 });
 
 root.addEventListener("submit", (event) => {
@@ -771,6 +1112,9 @@ root.addEventListener("submit", (event) => {
 window.addEventListener("hashchange", () => void renderRoute());
 window.addEventListener("online", () => setNetworkBadge(true));
 window.addEventListener("offline", () => setNetworkBadge(false));
-window.addEventListener("pagehide", () => player.destroy());
+window.addEventListener("pagehide", () => {
+  saveCurrentProgress();
+  player.destroy();
+});
 
 void initialize();

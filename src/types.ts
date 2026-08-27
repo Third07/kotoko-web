@@ -63,12 +63,19 @@ export interface StreamItem {
   subtitles?: SubtitleItem[];
   behaviorHints?: {
     filename?: string;
+    videoSize?: number;
     notWebReady?: boolean;
     proxyHeaders?: {
       request?: Record<string, string>;
       response?: Record<string, string>;
     };
   };
+}
+
+export interface PlayerSettings {
+  volume: number;
+  muted: boolean;
+  playbackRate: number;
 }
 
 export interface SubtitleItem {

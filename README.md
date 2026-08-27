@@ -8,7 +8,9 @@ A separate, mobile-first web client for an authorized Stremio-compatible add-on.
 - Movie and series details
 - Season and aired-episode selection
 - Direct HLS and MP4 playback
-- Stream switching and clear unsupported-stream messages
+- Stream switching, retry recovery, fullscreen, and previous/next episode controls
+- Browser-managed downloads for direct MP4, MKV, WebM and similar media files
+- Search filtering and sorting
 - Watchlist and Continue Watching stored in the browser
 - Same-origin Cloudflare Worker adapter that keeps the personalized manifest URL out of public files
 
@@ -39,3 +41,5 @@ The manifest URL must never be committed to GitHub or placed in frontend JavaScr
 ## Playback support
 
 Browser playback supports direct HTTPS HLS and MP4/WebM streams. Torrent-only (`infoHash`), debrid-dependent, DRM-protected, or provider-page streams are listed with an explanation but cannot be played directly by this web client.
+
+The download action appears only when an add-on supplies a direct media file URL. HLS playlists, torrents, DRM streams, and sources requiring private request headers are intentionally excluded. Cross-origin download behavior remains controlled by the media host and the user's browser.

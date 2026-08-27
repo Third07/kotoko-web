@@ -12,6 +12,7 @@ with sync_playwright() as playwright:
 
     page.get_by_role("heading", name="Isla Nights", exact=True).wait_for()
     page.get_by_role("heading", name="Tagalog Dubbed Movies").wait_for()
+    assert page.locator(".mobile-nav a").count() == 5
     page.screenshot(path=str(screenshot), full_page=True)
 
     page.get_by_role("link", name="View Isla Nights").first.click()
@@ -30,17 +31,26 @@ with sync_playwright() as playwright:
 
     page.get_by_role("button", name="Play").click()
     page.locator("#player-dialog[open]").wait_for()
-    page.get_by_role("button", name="Kotoko HD 1080p Web").wait_for()
+    page.get_by_role("button", name="Kotoko HD 1080p File").wait_for()
+    page.get_by_role("link", name="Download file").wait_for()
+    assert page.get_by_role("button", name="Next").is_enabled()
+    page.get_by_role("button", name="Next").click()
+    page.get_by_text("S1 E2 · Karaoke Night", exact=True).first.wait_for()
     page.get_by_role("button", name="Try next").click()
 
-    page.get_by_role("button", name="Close player").click()
+    page.keyboard.press("Escape")
     page.locator("#player-dialog:not([open])").wait_for()
+    assert "player-open" not in (page.locator("body").get_attribute("class") or "")
 
     search = page.get_by_role("searchbox", name="Search Kotoko catalog")
     search.fill("Isla")
     search.press("Enter")
     page.get_by_role("heading", name='Results for “Isla”').wait_for()
     page.get_by_role("link", name="View Isla Nights").wait_for()
+    page.locator(".filter-chip", has_text="Movies").click()
+    page.get_by_role("heading", name='Results for “Isla”').wait_for()
+    page.locator("#search-sort").select_option("title")
+    page.get_by_role("heading", name='Results for “Isla”').wait_for()
 
     browser.close()
 
