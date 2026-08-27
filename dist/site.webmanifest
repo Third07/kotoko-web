@@ -1,0 +1,17 @@
+{
+  "name": "Kotoko — Pinoy Screen",
+  "short_name": "Kotoko",
+  "description": "A private Filipino and Tagalog-dubbed media library.",
+  "start_url": "/#/home",
+  "display": "standalone",
+  "background_color": "#09070f",
+  "theme_color": "#09070f",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
