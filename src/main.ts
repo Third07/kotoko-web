@@ -787,6 +787,8 @@ function renderAddons(): void {
       const types = (manifestValue?.types ?? []).filter((type) => type === "movie" || type === "series");
       const statusLabel = addon.status === "ready" ? (enabled ? "Installed" : "Available") : "Unavailable";
       const actionLabel = enabled ? "Remove from device" : "Install on device";
+      const isLastActiveSource = addon.status === "ready" && enabled && activeCount === 1;
+      const actionDisabled = (addon.status === "offline" && !enabled) || isLastActiveSource;
       return `
         <article class="addon-card ${enabled ? "is-installed" : "is-removed"} ${addon.status === "offline" ? "is-offline" : ""}">
           <div class="addon-reel">${logo ? `<img src="${logo}" alt="" loading="lazy" width="84" height="84" />` : `<span>${escapeHtml(name.slice(0, 1).toUpperCase())}</span>`}</div>
@@ -801,7 +803,7 @@ function renderAddons(): void {
           </div>
           <footer class="addon-card-footer">
             <small>${addon.id === "kotoko" ? "Primary Cloudflare source" : `Source id · ${escapeHtml(addon.id)}`}</small>
-            <button class="${enabled ? "danger-button" : "secondary-button"}" type="button" data-action="toggle-addon" data-addon-id="${escapeHtml(addon.id)}" data-enabled="${String(enabled)}" ${addon.status === "offline" && !enabled ? "disabled" : ""}>
+            <button class="${enabled ? "danger-button" : "secondary-button"}" type="button" data-action="toggle-addon" data-addon-id="${escapeHtml(addon.id)}" data-enabled="${String(enabled)}" ${actionDisabled ? "disabled" : ""} ${isLastActiveSource ? 'title="At least one active source is required."' : ""}>
               <i data-lucide="${enabled ? "trash-2" : "plus"}"></i>${actionLabel}
             </button>
           </footer>

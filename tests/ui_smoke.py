@@ -16,10 +16,10 @@ with sync_playwright() as playwright:
     page.screenshot(path=str(screenshot), full_page=True)
 
     page.goto("http://127.0.0.1:5173/#/addons", wait_until="networkidle")
-    page.get_by_role("heading", name="Your projection room").wait_for()
+    page.get_by_role("heading", name="Playback add-ons").wait_for()
     page.get_by_role("heading", name="Kotoko").wait_for()
-    page.get_by_text("1 active source", exact=True).wait_for()
-    assert page.get_by_role("button", name="Remove").is_disabled()
+    page.get_by_role("link", name="Sources 1").wait_for()
+    assert page.get_by_role("button", name="Remove from device").is_disabled()
 
     page.goto("http://127.0.0.1:5173/#/home", wait_until="networkidle")
     page.get_by_role("link", name="View Isla Nights").first.click()
