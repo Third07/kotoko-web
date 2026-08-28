@@ -1,5 +1,7 @@
 const API_PREFIX = "/api/";
 const MAX_MANIFEST_BYTES = 256 * 1024;
+const MAX_ADDONS = 8;
+const PRIMARY_ADDON_ID = "kotoko";
 const ALLOWED_TYPES = new Set(["movie", "series"]);
 const ALLOWED_RESOURCES = new Set(["catalog", "meta", "stream", "subtitles"]);
 const ALLOWED_EXTRAS = new Set(["skip", "search", "genre"]);
@@ -21,6 +23,18 @@ interface AddonManifest {
   [key: string]: unknown;
 }
 
+interface AddonConfig {
+  id: string;
+  manifestUrl: string;
+}
+
+interface AddonStatus {
+  id: string;
+  status: "ready" | "offline";
+  manifest?: AddonManifest;
+  error?: string;
+}
+
 class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -34,6 +48,58 @@ export function isSafeSegment(value: string): boolean {
   return value.length > 0 && value.length <= 180 && /^[A-Za-z0-9._:-]+$/.test(value);
 }
 
+function isSafeAddonId(value: string): boolean {
+  return /^[a-z0-9][a-z0-9_-]{0,39}$/.test(value);
+}
+
+function validateManifestUrl(value: string): URL {
+  let manifestUrl: URL;
+  try {
+    manifestUrl = new URL(value);
+  } catch {
+    throw new ApiError(500, "An add-on URL is not configured correctly.");
+  }
+  if (manifestUrl.protocol !== "https:" || !manifestUrl.pathname.endsWith("/manifest.json")) {
+    throw new ApiError(500, "An add-on URL is not configured correctly.");
+  }
+  return manifestUrl;
+}
+
+export function getAddonConfigs(env: Pick<Env, "KOTOKO_MANIFEST_URL" | "KOTOKO_ADDONS">): AddonConfig[] {
+  validateManifestUrl(env.KOTOKO_MANIFEST_URL);
+  const configs: AddonConfig[] = [{ id: PRIMARY_ADDON_ID, manifestUrl: env.KOTOKO_MANIFEST_URL }];
+  const raw = env.KOTOKO_ADDONS?.trim();
+  if (!raw) return configs;
+
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new ApiError(500, "KOTOKO_ADDONS must contain a valid JSON array.");
+  }
+  if (!Array.isArray(value) || value.length > MAX_ADDONS - 1) {
+    throw new ApiError(500, `KOTOKO_ADDONS must contain at most ${MAX_ADDONS - 1} additional add-ons.`);
+  }
+
+  const seen = new Set([PRIMARY_ADDON_ID]);
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      throw new ApiError(500, "Every additional add-on must include an id and manifestUrl.");
+    }
+    const item = entry as Record<string, unknown>;
+    if (typeof item.id !== "string" || !isSafeAddonId(item.id) || seen.has(item.id)) {
+      throw new ApiError(500, "Every additional add-on needs a unique lowercase id.");
+    }
+    if (typeof item.manifestUrl !== "string") {
+      throw new ApiError(500, "Every additional add-on must include an HTTPS manifestUrl.");
+    }
+    validateManifestUrl(item.manifestUrl);
+    seen.add(item.id);
+    configs.push({ id: item.id, manifestUrl: item.manifestUrl });
+  }
+  return configs;
+}
+
 export function buildAddonResourceUrl(
   manifestUrlValue: string,
   resource: AddonResource,
@@ -41,10 +107,7 @@ export function buildAddonResourceUrl(
   id: string,
   extras: URLSearchParams = new URLSearchParams()
 ): URL {
-  const manifestUrl = new URL(manifestUrlValue);
-  if (manifestUrl.protocol !== "https:" || !manifestUrl.pathname.endsWith("/manifest.json")) {
-    throw new ApiError(500, "The add-on URL is not configured correctly.");
-  }
+  const manifestUrl = validateManifestUrl(manifestUrlValue);
 
   if (!ALLOWED_RESOURCES.has(resource) || !ALLOWED_TYPES.has(type)) {
     throw new ApiError(400, "Unsupported add-on resource.");
@@ -156,17 +219,45 @@ async function fetchUpstream(url: URL, cacheTtl: number): Promise<Response> {
   return response;
 }
 
-async function handleManifest(env: Env): Promise<Response> {
-  const manifestUrl = new URL(env.KOTOKO_MANIFEST_URL);
-  if (manifestUrl.protocol !== "https:" || !manifestUrl.pathname.endsWith("/manifest.json")) {
-    throw new ApiError(500, "The add-on URL is not configured correctly.");
-  }
-
+async function fetchManifest(config: AddonConfig): Promise<AddonManifest> {
+  const manifestUrl = validateManifestUrl(config.manifestUrl);
   const upstream = await fetchUpstream(manifestUrl, 300);
   const value = await readJsonWithLimit(upstream, MAX_MANIFEST_BYTES);
   if (!isManifest(value)) throw new ApiError(502, "The add-on manifest is incomplete.");
+  return sanitizeManifest(value);
+}
 
-  return apiJson(sanitizeManifest(value), {
+async function handleAddons(env: Env): Promise<Response> {
+  const configs = getAddonConfigs(env);
+  const addons: AddonStatus[] = await Promise.all(
+    configs.map(async (config) => {
+      try {
+        return { id: config.id, status: "ready", manifest: await fetchManifest(config) };
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            message: "add-on manifest unavailable",
+            addonId: config.id,
+            error: error instanceof Error ? error.message : String(error)
+          })
+        );
+        return {
+          id: config.id,
+          status: "offline",
+          error: "This add-on is temporarily unavailable."
+        };
+      }
+    })
+  );
+  return apiJson({ addons }, { headers: { "Cache-Control": "public, max-age=60, s-maxage=120" } });
+}
+
+async function handleManifest(env: Env): Promise<Response> {
+  const [primary] = getAddonConfigs(env);
+  if (!primary) throw new ApiError(500, "The primary add-on is not configured.");
+  const manifest = await fetchManifest(primary);
+
+  return apiJson(manifest, {
     headers: { "Cache-Control": "public, max-age=120, s-maxage=300" }
   });
 }
@@ -178,17 +269,25 @@ async function handleResource(request: Request, env: Env, url: URL): Promise<Res
   } catch {
     throw new ApiError(400, "Invalid encoded route.");
   }
-  const [resourceValue, type = "", id = ""] = parts;
-  if (!resourceValue || !ALLOWED_RESOURCES.has(resourceValue) || parts.length !== 3) {
+  const namespaced = parts[0] === "addons";
+  const addonId = namespaced ? parts[1] ?? "" : PRIMARY_ADDON_ID;
+  const resourceValue = namespaced ? parts[2] : parts[0];
+  const type = namespaced ? parts[3] ?? "" : parts[1] ?? "";
+  const id = namespaced ? parts[4] ?? "" : parts[2] ?? "";
+  const expectedParts = namespaced ? 5 : 3;
+  if (!resourceValue || !ALLOWED_RESOURCES.has(resourceValue) || parts.length !== expectedParts) {
     throw new ApiError(404, "API route not found.");
   }
+
+  const config = getAddonConfigs(env).find((item) => item.id === addonId);
+  if (!config) throw new ApiError(404, "Add-on not found.");
 
   const resource = resourceValue as AddonResource;
   if (resource === "catalog" && !isSafeSegment(id)) {
     throw new ApiError(400, "Invalid catalog identifier.");
   }
 
-  const target = buildAddonResourceUrl(env.KOTOKO_MANIFEST_URL, resource, type, id, url.searchParams);
+  const target = buildAddonResourceUrl(config.manifestUrl, resource, type, id, url.searchParams);
   const cacheTtl = resource === "meta" ? 1800 : resource === "catalog" ? 300 : resource === "subtitles" ? 120 : 15;
   const upstream = await fetchUpstream(target, cacheTtl);
   const headers = new Headers({
@@ -231,6 +330,7 @@ export default {
         if (url.pathname === "/api/health") {
           return apiJson({ status: "ok" }, { headers: { "Cache-Control": "no-store" } });
         }
+        if (url.pathname === "/api/addons") return await handleAddons(env);
         if (url.pathname === "/api/manifest") return await handleManifest(env);
         return await handleResource(request, env, url);
       }

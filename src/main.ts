@@ -30,21 +30,23 @@ import {
   X,
   createIcons
 } from "lucide";
-import { clearApiCache, getCatalog, getManifest, getMeta, getStreams, getSubtitles } from "./api";
-import { MediaPlayer, getDownloadInfo, getStreamKind, streamDetail, streamLabel } from "./player";
+import { clearApiCache, getAddons, getCatalog, getMeta, getStreams, getSubtitles } from "./api";
+import { MediaPlayer, getDownloadInfo, getStreamKind, sortStreamsForWeb, streamDetail, streamLabel } from "./player";
 import {
   clearHistory,
   getHistory,
+  isAddonEnabled,
   getLastStreamName,
   getPlayerSettings,
   getWatchlist,
   isInWatchlist,
   saveProgress,
   savePlayerSettings,
+  setAddonEnabled,
   setLastStreamName,
   toggleWatchlist
 } from "./storage";
-import type { AddonCatalog, AddonManifest, MetaItem, StreamItem, VideoItem } from "./types";
+import type { AddonCatalog, AddonSource, MetaItem, StreamItem, VideoItem } from "./types";
 import type { SubtitleItem } from "./types";
 
 const rootElement = document.querySelector<HTMLDivElement>("#app");
@@ -80,7 +82,7 @@ const icons = {
   X
 };
 
-let manifest: AddonManifest | null = null;
+let addons: AddonSource[] = [];
 let currentMeta: MetaItem | null = null;
 let currentVideoId = "";
 let currentEpisodeLabel = "";
@@ -91,6 +93,8 @@ let lastProgressSave = 0;
 let routeGeneration = 0;
 let playerRequestId = 0;
 let closingPlayer = false;
+let stallRecoveryTimer = 0;
+let automaticFallbackUsed = false;
 const playerSettings = getPlayerSettings();
 const previewCache = new Map<string, MetaItem>();
 const catalogCache = new Map<string, MetaItem[]>();
@@ -125,8 +129,8 @@ function safeHttpsUrl(value?: string): string | null {
   }
 }
 
-function mediaKey(type: string, id: string): string {
-  return `${type}:${id}`;
+function mediaKey(type: string, id: string, addonId = ""): string {
+  return `${addonId}:${type}:${id}`;
 }
 
 function formatBytes(value?: number): string {
@@ -137,7 +141,45 @@ function formatBytes(value?: number): string {
 }
 
 function routeFor(meta: MetaItem): string {
-  return `#/detail/${encodeURIComponent(meta.type)}/${encodeURIComponent(meta.id)}`;
+  const source = meta.addonId ? `?source=${encodeURIComponent(meta.addonId)}` : "";
+  return `#/detail/${encodeURIComponent(meta.type)}/${encodeURIComponent(meta.id)}${source}`;
+}
+
+function readyAddons(): AddonSource[] {
+  return addons.filter((addon) => addon.status === "ready" && addon.manifest);
+}
+
+function enabledAddons(): AddonSource[] {
+  return readyAddons().filter((addon) => isAddonEnabled(addon.id));
+}
+
+function activeCatalogs(): AddonCatalog[] {
+  const unique = new Map<string, AddonCatalog>();
+  for (const addon of enabledAddons()) {
+    for (const catalog of addon.manifest?.catalogs ?? []) {
+      const key = `${catalog.type}:${catalog.id}`;
+      if (!unique.has(key)) {
+        unique.set(key, {
+          ...catalog,
+          addonId: addon.id,
+          addonName: addon.manifest?.name || addon.id
+        });
+      }
+    }
+  }
+  return [...unique.values()];
+}
+
+function addonDisplayName(addonId?: string): string {
+  if (!addonId) return "Add-on";
+  return addons.find((addon) => addon.id === addonId)?.manifest?.name || addonId;
+}
+
+function orderedEnabledAddons(preferredId?: string): AddonSource[] {
+  const active = enabledAddons();
+  return preferredId
+    ? [...active].sort((first, second) => Number(second.id === preferredId) - Number(first.id === preferredId))
+    : active;
 }
 
 function refreshIcons(): void {
@@ -161,11 +203,12 @@ function setNetworkBadge(online: boolean): void {
 }
 
 function setActiveNavigation(route: { name: string; parts: string[] }): void {
+  const catalogType = route.name === "catalog" ? (route.parts.length >= 4 ? route.parts[2] : route.parts[1]) : undefined;
   const active =
     route.name === "catalog" || route.name === "detail"
-      ? route.parts[1] === "movie"
+      ? (route.name === "catalog" ? catalogType : route.parts[1]) === "movie"
         ? "movies"
-        : route.parts[1] === "series"
+        : (route.name === "catalog" ? catalogType : route.parts[1]) === "series"
           ? "series"
           : route.name
       : route.name;
@@ -175,6 +218,17 @@ function setActiveNavigation(route: { name: string; parts: string[] }): void {
     if (selected) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   });
+}
+
+function updateAddonBadge(): void {
+  const badge = document.querySelector<HTMLElement>("#addon-badge");
+  const count = document.querySelector<HTMLElement>("#addon-count");
+  if (!badge || !count) return;
+  const activeCount = enabledAddons().length;
+  const offlineCount = addons.filter((addon) => addon.status === "offline").length;
+  count.textContent = String(activeCount);
+  badge.classList.toggle("has-warning", offlineCount > 0 || activeCount === 0);
+  badge.title = `${activeCount} active ${activeCount === 1 ? "source" : "sources"}${offlineCount ? ` · ${offlineCount} unavailable` : ""}`;
 }
 
 function renderShell(): void {
@@ -189,11 +243,13 @@ function renderShell(): void {
         <a href="#/catalog/movie/latest_movies" data-nav="movies">Movies</a>
         <a href="#/catalog/series/top_series" data-nav="series">Series</a>
         <a href="#/library" data-nav="library">My library</a>
+        <a href="#/addons" data-nav="addons">Add-ons</a>
       </nav>
       <form class="search-form" id="search-form" role="search">
         <i data-lucide="search"></i>
         <input id="search-input" name="q" type="search" placeholder="Search Kotoko" autocomplete="off" aria-label="Search Kotoko catalog" />
       </form>
+      <a class="addon-badge" id="addon-badge" href="#/addons" data-nav="addons"><i data-lucide="server"></i><span>Sources</span><strong id="addon-count">0</strong></a>
       <span class="network-badge" id="network-badge"><i data-lucide="wifi"></i><span>Online</span></span>
     </header>
     <main id="main-content" tabindex="-1"></main>
@@ -231,7 +287,7 @@ function renderShell(): void {
           </div>
           <div class="source-heading"><span><i data-lucide="server"></i> Playback sources</span><button type="button" class="text-button" data-action="try-next"><i data-lucide="skip-forward"></i> Try next source</button></div>
           <div class="source-list" id="source-list"></div>
-          <p class="player-note"><i data-lucide="captions"></i> Subtitles come from the add-on. Downloads appear only for direct media files and are handled by your browser.</p>
+          <p class="player-note"><i data-lucide="captions"></i> Sources are combined from your installed add-ons. Downloads appear only for direct media files.</p>
         </div>
       </div>
     </dialog>
@@ -258,7 +314,7 @@ function formatMetaLine(meta: MetaItem): string {
 }
 
 function posterCard(meta: MetaItem, historyProgress?: number): string {
-  previewCache.set(mediaKey(meta.type, meta.id), meta);
+  previewCache.set(mediaKey(meta.type, meta.id, meta.addonId), meta);
   const poster = safeImageUrl(meta.poster);
   const typeLabel = meta.type === "series" ? "Series" : "Movie";
   return `
@@ -281,7 +337,7 @@ function renderRail(title: string, items: MetaItem[], catalog?: AddonCatalog): s
   if (items.length === 0) return "";
   const railId = `rail-${catalog?.type ?? "mixed"}-${(catalog?.id ?? title).replace(/[^a-z0-9_-]+/gi, "-")}`;
   const link = catalog
-    ? `<a class="rail-link" href="#/catalog/${encodeURIComponent(catalog.type)}/${encodeURIComponent(catalog.id)}">See all <i data-lucide="chevron-right"></i></a>`
+    ? `<a class="rail-link" href="#/catalog/${encodeURIComponent(catalog.addonId || "kotoko")}/${encodeURIComponent(catalog.type)}/${encodeURIComponent(catalog.id)}">See all <i data-lucide="chevron-right"></i></a>`
     : "";
   return `
     <section class="rail-section">
@@ -304,7 +360,7 @@ function heroMarkup(meta: MetaItem): string {
         <p class="hero-description">${escapeHtml(meta.description || "A featured title from your Filipino and Tagalog-dubbed catalog.")}</p>
         <div class="hero-actions">
           <a class="primary-button" href="${routeFor(meta)}"><i data-lucide="play"></i> View details</a>
-          <button class="secondary-button" type="button" data-action="toggle-watchlist" data-type="${meta.type}" data-id="${escapeHtml(meta.id)}">
+          <button class="secondary-button" type="button" data-action="toggle-watchlist" data-type="${meta.type}" data-id="${escapeHtml(meta.id)}" data-addon-id="${escapeHtml(meta.addonId || "")}">
             <i data-lucide="${isInWatchlist(meta.id, meta.type) ? "check" : "plus"}"></i>${isInWatchlist(meta.id, meta.type) ? "In my list" : "My list"}
           </button>
         </div>
@@ -322,11 +378,17 @@ function applyBackdrops(): void {
 }
 
 async function loadCatalog(catalog: AddonCatalog, skip = 0): Promise<MetaItem[]> {
-  const key = `${catalog.type}:${catalog.id}:${skip}`;
+  const addonId = catalog.addonId;
+  if (!addonId) throw new Error("This catalog is missing its add-on source.");
+  const key = `${addonId}:${catalog.type}:${catalog.id}:${skip}`;
   const existing = catalogCache.get(key);
   if (existing) return existing;
-  const items = await getCatalog(catalog.type, catalog.id, { skip });
-  for (const item of items) previewCache.set(mediaKey(item.type, item.id), item);
+  const items = (await getCatalog(addonId, catalog.type, catalog.id, { skip })).map((item) => ({
+    ...item,
+    addonId,
+    addonName: catalog.addonName || addonDisplayName(addonId)
+  }));
+  for (const item of items) previewCache.set(mediaKey(item.type, item.id, addonId), item);
   catalogCache.set(key, items);
   return items;
 }
@@ -338,10 +400,14 @@ async function renderHome(generation: number): Promise<void> {
     <section class="rail-section"><div class="section-heading"><h2>Loading your catalogs…</h2></div><div class="poster-rail">${skeletonCards()}</div></section>
   `;
 
-  if (!manifest) return;
-  const results = await Promise.allSettled(manifest.catalogs.map((catalog) => loadCatalog(catalog, 0)));
+  const catalogs = activeCatalogs();
+  if (catalogs.length === 0) {
+    renderNoActiveAddons();
+    return;
+  }
+  const results = await Promise.allSettled(catalogs.map((catalog) => loadCatalog(catalog, 0)));
   if (generation !== routeGeneration) return;
-  const loaded = manifest.catalogs.map((catalog, index) => ({
+  const loaded = catalogs.map((catalog, index) => ({
     catalog,
     items: results[index]?.status === "fulfilled" ? results[index].value : []
   }));
@@ -384,12 +450,14 @@ function renderErrorState(title: string, detail: string, retry = false): void {
   refreshIcons();
 }
 
-function findCatalog(type: string, id: string): AddonCatalog | undefined {
-  return manifest?.catalogs.find((catalog) => catalog.type === type && catalog.id === id);
+function findCatalog(addonId: string, type: string, id: string): AddonCatalog | undefined {
+  return activeCatalogs().find(
+    (catalog) => catalog.addonId === addonId && catalog.type === type && catalog.id === id
+  );
 }
 
-async function renderCatalog(type: string, id: string, generation: number): Promise<void> {
-  const catalog = findCatalog(type, id);
+async function renderCatalog(addonId: string, type: string, id: string, generation: number): Promise<void> {
+  const catalog = findCatalog(addonId, type, id);
   if (!catalog) {
     renderErrorState("Catalog not found", "This catalog is not part of the installed add-on.");
     return;
@@ -402,9 +470,9 @@ async function renderCatalog(type: string, id: string, generation: number): Prom
     if (generation !== routeGeneration) return;
     main.innerHTML = `
       <section class="page">
-        <div class="page-heading"><a href="#/home" class="back-link"><i data-lucide="arrow-left"></i> Home</a><p class="eyebrow">${escapeHtml(catalog.type)}</p><h1>${escapeHtml(catalog.name)}</h1><p>${items.length} titles loaded</p></div>
+        <div class="page-heading"><a href="#/home" class="back-link"><i data-lucide="arrow-left"></i> Home</a><p class="eyebrow">${escapeHtml(catalog.addonName || addonDisplayName(addonId))} · ${escapeHtml(catalog.type)}</p><h1>${escapeHtml(catalog.name)}</h1><p>${items.length} titles loaded</p></div>
         <div class="poster-grid" id="catalog-grid">${items.map((item) => posterCard(item)).join("")}</div>
-        ${items.length > 0 ? `<div class="load-more-wrap"><button class="secondary-button" type="button" data-action="load-more" data-type="${catalog.type}" data-id="${escapeHtml(catalog.id)}" data-skip="${items.length}">Load more</button></div>` : `<div class="empty-state"><h2>No titles found</h2><p>The add-on returned an empty catalog.</p></div>`}
+        ${items.length > 0 ? `<div class="load-more-wrap"><button class="secondary-button" type="button" data-action="load-more" data-addon-id="${escapeHtml(addonId)}" data-type="${catalog.type}" data-id="${escapeHtml(catalog.id)}" data-skip="${items.length}">Load more</button></div>` : `<div class="empty-state"><h2>No titles found</h2><p>The add-on returned an empty catalog.</p></div>`}
       </section>
     `;
     refreshIcons();
@@ -416,8 +484,9 @@ async function renderCatalog(type: string, id: string, generation: number): Prom
 async function loadMore(button: HTMLButtonElement): Promise<void> {
   const type = button.dataset.type ?? "";
   const id = button.dataset.id ?? "";
+  const addonId = button.dataset.addonId ?? "";
   const skip = Number(button.dataset.skip ?? "0");
-  const catalog = findCatalog(type, id);
+  const catalog = findCatalog(addonId, type, id);
   const grid = document.querySelector<HTMLElement>("#catalog-grid");
   if (!catalog || !grid || !Number.isFinite(skip)) return;
   button.disabled = true;
@@ -502,7 +571,7 @@ function detailMarkup(meta: MetaItem): string {
           <p class="detail-description">${escapeHtml(meta.description || "No synopsis is available for this title.")}</p>
           <div class="hero-actions">
             <button class="primary-button" type="button" data-action="play" data-video-id="${escapeHtml(videoId)}" ${videoId ? "" : "disabled"}><i data-lucide="play"></i>${historyVideo ? "Resume" : "Play"}</button>
-            <button class="secondary-button" type="button" data-action="toggle-watchlist" data-type="${meta.type}" data-id="${escapeHtml(meta.id)}"><i data-lucide="${watchlisted ? "check" : "plus"}"></i>${watchlisted ? "In my list" : "My list"}</button>
+            <button class="secondary-button" type="button" data-action="toggle-watchlist" data-type="${meta.type}" data-id="${escapeHtml(meta.id)}" data-addon-id="${escapeHtml(meta.addonId || "")}"><i data-lucide="${watchlisted ? "check" : "plus"}"></i>${watchlisted ? "In my list" : "My list"}</button>
           </div>
           ${seriesControls}
         </div>
@@ -519,13 +588,78 @@ function episodePreview(video: VideoItem): string {
   return `<article class="episode-preview">${thumb ? `<img src="${thumb}" alt="" loading="lazy" width="320" height="180" />` : `<div class="episode-placeholder"><i data-lucide="tv"></i></div>`}<div><p class="eyebrow">${escapeHtml(episodeLabel(video))}</p><h3>${escapeHtml(video.title || video.name || `Episode ${parseEpisodeNumbers(video).episode}`)}</h3><p class="episode-date">${escapeHtml(airDateLabel)}</p><p class="episode-overview">${escapeHtml(video.overview || "No episode summary is available yet.")}</p></div></article>`;
 }
 
-async function renderDetail(type: string, id: string, generation: number): Promise<void> {
-  const preview = previewCache.get(mediaKey(type, id));
+function addonSupportsResource(addon: AddonSource, resource: string): boolean {
+  return (addon.manifest?.resources ?? []).some((item) => {
+    if (item === resource) return true;
+    if (!item || typeof item !== "object") return false;
+    const value = item as Record<string, unknown>;
+    return value.name === resource || value.resource === resource;
+  });
+}
+
+function resourceAddons(resource: string, preferredId?: string): AddonSource[] {
+  return orderedEnabledAddons(preferredId).filter((addon) => addonSupportsResource(addon, resource));
+}
+
+async function getMetaWithFallback(type: string, id: string, preferredId?: string): Promise<MetaItem> {
+  let lastError: unknown;
+  for (const addon of resourceAddons("meta", preferredId)) {
+    try {
+      return {
+        ...(await getMeta(addon.id, type, id)),
+        addonId: addon.id,
+        addonName: addon.manifest?.name || addon.id
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("No installed add-on returned details for this title.");
+}
+
+async function getCombinedStreams(type: string, videoId: string, preferredId?: string): Promise<StreamItem[]> {
+  const sources = resourceAddons("stream", preferredId);
+  const results = await Promise.allSettled(
+    sources.map(async (addon) =>
+      (await getStreams(addon.id, type, videoId)).map((stream) => ({
+        ...stream,
+        addonId: addon.id,
+        addonName: addon.manifest?.name || addon.id
+      }))
+    )
+  );
+  const unique = new Map<string, StreamItem>();
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue;
+    for (const stream of result.value) {
+      const key = [stream.url, stream.externalUrl, stream.infoHash, stream.fileIdx, stream.name, stream.title].join("|");
+      if (!unique.has(key)) unique.set(key, stream);
+    }
+  }
+  return [...unique.values()];
+}
+
+async function getCombinedSubtitles(type: string, videoId: string, preferredId?: string): Promise<SubtitleItem[]> {
+  const results = await Promise.allSettled(
+    resourceAddons("subtitles", preferredId).map((addon) => getSubtitles(addon.id, type, videoId))
+  );
+  const unique = new Map<string, SubtitleItem>();
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue;
+    for (const subtitle of result.value) unique.set(`${subtitle.url}|${subtitle.lang || ""}`, subtitle);
+  }
+  return [...unique.values()];
+}
+
+async function renderDetail(type: string, id: string, preferredId: string, generation: number): Promise<void> {
+  const preview =
+    previewCache.get(mediaKey(type, id, preferredId)) ??
+    [...previewCache.values()].find((item) => item.type === type && item.id === id);
   const main = mainElement();
   let meta: MetaItem;
   main.innerHTML = `<section class="detail-loading"><span class="spinner"></span><p>Loading details…</p></section>`;
   try {
-    meta = await getMeta(type, id);
+    meta = await getMetaWithFallback(type, id, preferredId || preview?.addonId);
   } catch (error) {
     if (!preview) {
       if (generation !== routeGeneration) return;
@@ -583,9 +717,8 @@ async function renderSearch(query: string, type: SearchType, sort: SearchSort, g
 
   main.innerHTML = `<section class="page"><div class="page-heading"><p class="eyebrow">Searching every catalog</p><h1>Results for “${escapeHtml(query)}”</h1>${searchControls(query, type, sort)}</div><div class="poster-grid">${skeletonCards(10)}</div></section>`;
   setSearchSortValue(sort);
-  if (!manifest) return;
-
-  const catalogs = type === "all" ? manifest.catalogs : manifest.catalogs.filter((catalog) => catalog.type === type);
+  const availableCatalogs = activeCatalogs();
+  const catalogs = type === "all" ? availableCatalogs : availableCatalogs.filter((catalog) => catalog.type === type);
   const tasks = catalogs.flatMap((catalog) => [0, 20, 40].map((skip) => loadCatalog(catalog, skip)));
   const settled = await Promise.allSettled(tasks);
   if (generation !== routeGeneration) return;
@@ -612,14 +745,84 @@ async function renderSearch(query: string, type: SearchType, sort: SearchSort, g
 function renderLibrary(): void {
   const watchlist = getWatchlist();
   const history = getHistory();
+  const sourceCount = enabledAddons().length;
   const historyCards = history
     .map((entry) => posterCard(entry.meta, entry.duration > 0 ? entry.currentTime / entry.duration : 0))
     .join("");
   mainElement().innerHTML = `
     <section class="page library-page">
       <div class="page-heading"><p class="eyebrow">Saved on this device</p><h1>My library</h1><p>Your list and playback progress stay in this browser.</p></div>
+      <a class="source-library-card" href="#/addons"><span class="source-library-icon"><i data-lucide="server"></i></span><span><small>Playback shelf</small><strong>Manage add-ons</strong><em>${sourceCount} ${sourceCount === 1 ? "source" : "sources"} active on this device</em></span><i data-lucide="chevron-right"></i></a>
       <section class="library-block"><div class="section-heading"><div><p class="eyebrow">Saved titles</p><h2>My list</h2></div></div>${watchlist.length ? `<div class="poster-grid">${watchlist.map((item) => posterCard(item)).join("")}</div>` : `<div class="empty-state compact"><h3>Your list is empty</h3><p>Add a title to keep it close.</p></div>`}</section>
       <section class="library-block"><div class="section-heading"><div><p class="eyebrow">Playback progress</p><h2>Continue watching</h2></div>${history.length ? `<button type="button" class="danger-button" data-action="clear-history"><i data-lucide="trash-2"></i> Clear history</button>` : ""}</div>${history.length ? `<div class="poster-grid">${historyCards}</div>` : `<div class="empty-state compact"><h3>No watch history</h3><p>Started videos will appear here.</p></div>`}</section>
+    </section>
+  `;
+  refreshIcons();
+}
+
+function renderNoActiveAddons(): void {
+  mainElement().innerHTML = `
+    <section class="error-state">
+      <span class="error-icon"><i data-lucide="server"></i></span>
+      <p class="eyebrow">Projection room</p>
+      <h1>No active sources</h1>
+      <p>Install an available add-on on this device to load catalogs and playback sources.</p>
+      <a class="primary-button" href="#/addons"><i data-lucide="server"></i> Manage add-ons</a>
+    </section>
+  `;
+  refreshIcons();
+}
+
+function renderAddons(): void {
+  const activeCount = enabledAddons().length;
+  const readyCount = readyAddons().length;
+  const offlineCount = addons.filter((addon) => addon.status === "offline").length;
+  const cards = addons
+    .map((addon) => {
+      const enabled = isAddonEnabled(addon.id);
+      const manifestValue = addon.manifest;
+      const name = manifestValue?.name || addon.id;
+      const logo = safeImageUrl(manifestValue?.logo);
+      const catalogCount = manifestValue?.catalogs.length ?? 0;
+      const types = (manifestValue?.types ?? []).filter((type) => type === "movie" || type === "series");
+      const statusLabel = addon.status === "ready" ? (enabled ? "Installed" : "Available") : "Unavailable";
+      const actionLabel = enabled ? "Remove from device" : "Install on device";
+      return `
+        <article class="addon-card ${enabled ? "is-installed" : "is-removed"} ${addon.status === "offline" ? "is-offline" : ""}">
+          <div class="addon-reel">${logo ? `<img src="${logo}" alt="" loading="lazy" width="84" height="84" />` : `<span>${escapeHtml(name.slice(0, 1).toUpperCase())}</span>`}</div>
+          <div class="addon-card-copy">
+            <div class="addon-card-status"><span class="status-light"></span>${escapeHtml(statusLabel)}</div>
+            <h2>${escapeHtml(name)}</h2>
+            <p>${escapeHtml(manifestValue?.description || addon.error || "This source has not returned its manifest yet.")}</p>
+            <div class="addon-facts">
+              ${types.map((type) => `<span>${type === "series" ? "Series" : "Movies"}</span>`).join("")}
+              <span>${catalogCount} ${catalogCount === 1 ? "catalog" : "catalogs"}</span>
+            </div>
+          </div>
+          <footer class="addon-card-footer">
+            <small>${addon.id === "kotoko" ? "Primary Cloudflare source" : `Source id · ${escapeHtml(addon.id)}`}</small>
+            <button class="${enabled ? "danger-button" : "secondary-button"}" type="button" data-action="toggle-addon" data-addon-id="${escapeHtml(addon.id)}" data-enabled="${String(enabled)}" ${addon.status === "offline" && !enabled ? "disabled" : ""}>
+              <i data-lucide="${enabled ? "trash-2" : "plus"}"></i>${actionLabel}
+            </button>
+          </footer>
+        </article>
+      `;
+    })
+    .join("");
+
+  mainElement().innerHTML = `
+    <section class="page addons-page">
+      <div class="addons-heading">
+        <div class="page-heading"><a href="#/home" class="back-link"><i data-lucide="arrow-left"></i> Home</a><p class="eyebrow">Projection room</p><h1>Playback add-ons</h1><p>Choose which approved sources supply catalogs, details, subtitles and streams on this device.</p></div>
+        <button class="secondary-button" type="button" data-action="refresh-addons"><i data-lucide="refresh-cw"></i> Refresh sources</button>
+      </div>
+      <div class="addon-tally" aria-label="Add-on status">
+        <span><strong>${activeCount}</strong><small>Active</small></span>
+        <span><strong>${readyCount}</strong><small>Ready</small></span>
+        <span><strong>${offlineCount}</strong><small>Offline</small></span>
+      </div>
+      <div class="addon-grid">${cards || `<div class="empty-state"><h2>No configured add-ons</h2><p>Add an approved manifest in Cloudflare, then refresh this screen.</p></div>`}</div>
+      <aside class="addon-admin-note"><span><i data-lucide="server"></i><strong>Private by design.</strong> Manifest URLs stay in Cloudflare. To offer another source, add it to the encrypted <code>KOTOKO_ADDONS</code> secret and refresh.</span></aside>
     </section>
   `;
   refreshIcons();
@@ -642,10 +845,22 @@ async function renderRoute(): Promise<void> {
     const searchInput = document.querySelector<HTMLInputElement>("#search-input");
     if (searchInput) searchInput.value = "";
   }
-  if (!manifest) return;
-  if (route.name === "home") await renderHome(generation);
-  else if (route.name === "catalog" && route.parts[1] && route.parts[2]) await renderCatalog(route.parts[1], route.parts[2], generation);
-  else if (route.name === "detail" && route.parts[1] && route.parts[2]) await renderDetail(route.parts[1], route.parts[2], generation);
+  if (addons.length === 0) return;
+  if (route.name === "addons") renderAddons();
+  else if (enabledAddons().length === 0) renderNoActiveAddons();
+  else if (route.name === "home") await renderHome(generation);
+  else if (route.name === "catalog") {
+    if (route.parts[1] && route.parts[2] && route.parts[3]) {
+      await renderCatalog(route.parts[1], route.parts[2], route.parts[3], generation);
+    } else if (route.parts[1] && route.parts[2]) {
+      const catalog = activeCatalogs().find((item) => item.type === route.parts[1] && item.id === route.parts[2]);
+      if (catalog?.addonId) await renderCatalog(catalog.addonId, catalog.type, catalog.id, generation);
+      else renderErrorState("Catalog not found", "No installed add-on provides this catalog.");
+    } else renderErrorState("Catalog not found", "That catalog address is incomplete.");
+  }
+  else if (route.name === "detail" && route.parts[1] && route.parts[2]) {
+    await renderDetail(route.parts[1], route.parts[2], route.query.get("source") ?? "", generation);
+  }
   else if (route.name === "search") {
     const typeValue = route.query.get("type");
     const sortValue = route.query.get("sort");
@@ -765,6 +980,10 @@ function updateDownloadLink(stream?: StreamItem): void {
   link.title = `${download.filename}${download.size ? ` · ${formatBytes(download.size)}` : ""}`;
 }
 
+function streamPreferenceName(stream: StreamItem, index: number): string {
+  return `${stream.addonId || "source"}:${streamLabel(stream, index)}`;
+}
+
 function saveCurrentProgress(): void {
   const video = document.querySelector<HTMLVideoElement>("#video");
   if (!video || !currentMeta || !currentVideoId) return;
@@ -781,6 +1000,9 @@ function saveCurrentProgress(): void {
 async function openPlayer(videoId: string): Promise<void> {
   if (!currentMeta || !videoId) return;
   const requestId = ++playerRequestId;
+  window.clearTimeout(stallRecoveryTimer);
+  stallRecoveryTimer = 0;
+  automaticFallbackUsed = false;
   saveCurrentProgress();
   player.destroy();
   const videoElement = document.querySelector<HTMLVideoElement>("#video");
@@ -819,17 +1041,19 @@ async function openPlayer(videoId: string): Promise<void> {
 
   try {
     const [streamsResult, subtitlesResult] = await Promise.allSettled([
-      getStreams(currentMeta.type, videoId),
-      getSubtitles(currentMeta.type, videoId)
+      getCombinedStreams(currentMeta.type, videoId, currentMeta.addonId),
+      getCombinedSubtitles(currentMeta.type, videoId, currentMeta.addonId)
     ]);
-    currentStreams = streamsResult.status === "fulfilled" ? streamsResult.value : [];
+    currentStreams = sortStreamsForWeb(streamsResult.status === "fulfilled" ? streamsResult.value : []);
     currentSubtitles = subtitlesResult.status === "fulfilled" ? subtitlesResult.value : [];
     if (requestId !== playerRequestId || !dialog.open) return;
-    if (currentStreams.length === 0) throw new Error("The add-on returned no sources for this title.");
+    if (currentStreams.length === 0) throw new Error("Your installed add-ons returned no sources for this title.");
     renderSourceList(currentStreams);
     const remembered = getLastStreamName();
     const preferredIndex = currentStreams.findIndex(
-      (stream, index) => getStreamKind(stream) === "direct" && streamLabel(stream, index) === remembered
+      (stream, index) =>
+        getStreamKind(stream) === "direct" &&
+        (streamPreferenceName(stream, index) === remembered || streamLabel(stream, index) === remembered)
     );
     const firstDirect = currentStreams.findIndex((stream) => getStreamKind(stream) === "direct");
     const index = preferredIndex >= 0 ? preferredIndex : firstDirect;
@@ -854,7 +1078,7 @@ function renderSourceList(streams: StreamItem[]): void {
       const kind = getStreamKind(stream);
       const detail = streamDetail(stream);
       const badge = kind === "direct" ? (getDownloadInfo(stream) ? "File" : "Web") : kind === "external" ? "Open" : kind === "torrent" ? "App" : kind;
-      return `<button class="source-button ${kind === "direct" ? "" : "is-limited"}" type="button" data-action="select-source" data-index="${index}" data-kind="${kind}"><span><strong>${escapeHtml(streamLabel(stream, index))}</strong>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</span><em>${escapeHtml(badge)}</em></button>`;
+      return `<button class="source-button ${kind === "direct" ? "" : "is-limited"}" type="button" data-action="select-source" data-index="${index}" data-kind="${kind}"><span><strong>${escapeHtml(streamLabel(stream, index))}</strong>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}<small class="source-origin">via ${escapeHtml(stream.addonName || addonDisplayName(stream.addonId))}</small></span><em>${escapeHtml(badge)}</em></button>`;
     })
     .join("");
   refreshIcons();
@@ -889,11 +1113,13 @@ async function selectStream(index: number): Promise<void> {
   }
 
   currentStreamIndex = index;
-  setPlayerStatus(`Source ${index + 1} of ${currentStreams.length}`);
+  window.clearTimeout(stallRecoveryTimer);
+  stallRecoveryTimer = 0;
+  setPlayerStatus(`${stream.addonName || addonDisplayName(stream.addonId)} · ${index + 1} of ${currentStreams.length}`);
   document.querySelectorAll<HTMLElement>(".source-button").forEach((button) =>
     button.classList.toggle("is-active", Number(button.dataset.index) === index)
   );
-  setLastStreamName(streamLabel(stream, index));
+  setLastStreamName(streamPreferenceName(stream, index));
   updateDownloadLink(stream);
   const state = document.querySelector<HTMLElement>("#player-state");
   if (state) {
@@ -929,30 +1155,71 @@ async function selectStream(index: number): Promise<void> {
       },
       (message) => {
         setPlayerStatus("Source failed", "warning");
-        showPlayerMessage("Source failed", message);
+        recoverFromSourceFailure(message);
       },
       (status) => {
-        if (status === "playing") setPlayerStatus(`Playing source ${index + 1}`, "good");
-        else if (status === "buffering") setPlayerStatus("Buffering", "warning");
-        else if (status === "paused") setPlayerStatus("Paused");
-        else if (status === "ended") setPlayerStatus("Finished", "good");
-        else setPlayerStatus("Loading video");
+        if (status === "playing") {
+          window.clearTimeout(stallRecoveryTimer);
+          stallRecoveryTimer = 0;
+          setPlayerStatus(`Playing ${stream.addonName || addonDisplayName(stream.addonId)}`, "good");
+        } else if (status === "buffering") {
+          setPlayerStatus("Buffering", "warning");
+          scheduleStallRecovery(index);
+        } else if (status === "paused") {
+          window.clearTimeout(stallRecoveryTimer);
+          stallRecoveryTimer = 0;
+          setPlayerStatus("Paused");
+        } else if (status === "ended") {
+          window.clearTimeout(stallRecoveryTimer);
+          stallRecoveryTimer = 0;
+          setPlayerStatus("Finished", "good");
+        } else setPlayerStatus("Loading video");
       }
     );
   } catch (error) {
     setPlayerStatus("Unavailable", "warning");
-    showPlayerMessage("Source unavailable", error instanceof Error ? error.message : "This source cannot be played.");
+    recoverFromSourceFailure(error instanceof Error ? error.message : "This source cannot be played.");
   }
 }
 
+function nextDirectSourceIndex(fromIndex: number): number {
+  if (currentStreams.length < 2) return -1;
+  for (let offset = 1; offset < currentStreams.length; offset += 1) {
+    const index = (Math.max(fromIndex, 0) + offset) % currentStreams.length;
+    if (getStreamKind(currentStreams[index]!) === "direct") return index;
+  }
+  return -1;
+}
+
+function scheduleStallRecovery(index: number): void {
+  if (automaticFallbackUsed || stallRecoveryTimer || nextDirectSourceIndex(index) < 0) return;
+  stallRecoveryTimer = window.setTimeout(() => {
+    stallRecoveryTimer = 0;
+    if (!playerDialog().open || currentStreamIndex !== index) return;
+    const nextIndex = nextDirectSourceIndex(index);
+    if (nextIndex < 0) return;
+    automaticFallbackUsed = true;
+    toast("That source is slow—trying the next one");
+    void selectStream(nextIndex);
+  }, 12_000);
+}
+
+function recoverFromSourceFailure(message: string): void {
+  const nextIndex = nextDirectSourceIndex(currentStreamIndex);
+  if (!automaticFallbackUsed && nextIndex >= 0) {
+    automaticFallbackUsed = true;
+    toast("Source failed—trying another add-on");
+    void selectStream(nextIndex);
+    return;
+  }
+  showPlayerMessage("Source unavailable", message);
+}
+
 async function tryNextSource(): Promise<void> {
-  if (currentStreams.length === 0) return;
-  for (let offset = 1; offset <= currentStreams.length; offset += 1) {
-    const index = (Math.max(currentStreamIndex, -1) + offset) % currentStreams.length;
-    if (getStreamKind(currentStreams[index]!) === "direct") {
-      await selectStream(index);
-      return;
-    }
+  const index = nextDirectSourceIndex(currentStreamIndex);
+  if (index >= 0) {
+    await selectStream(index);
+    return;
   }
   showPlayerMessage("No other web source", "The remaining sources require a native app.");
 }
@@ -983,6 +1250,8 @@ function closePlayer(): void {
   if (closingPlayer) return;
   closingPlayer = true;
   playerRequestId += 1;
+  window.clearTimeout(stallRecoveryTimer);
+  stallRecoveryTimer = 0;
   saveCurrentProgress();
   player.destroy();
   const video = document.querySelector<HTMLVideoElement>("#video");
@@ -1032,15 +1301,48 @@ function setupPlayerEvents(): void {
   });
 }
 
+async function refreshAddons(): Promise<void> {
+  clearApiCache();
+  catalogCache.clear();
+  previewCache.clear();
+  mainElement().innerHTML = `<section class="detail-loading"><span class="spinner"></span><p>Refreshing approved sources…</p></section>`;
+  try {
+    addons = await getAddons();
+    if (addons.length === 0) throw new Error("Cloudflare returned no configured add-ons.");
+    updateAddonBadge();
+    await renderRoute();
+    toast("Playback sources refreshed");
+  } catch (error) {
+    renderErrorState("Sources unavailable", error instanceof Error ? error.message : "The add-on list could not be refreshed.", true);
+  }
+}
+
+function toggleConfiguredAddon(addonId: string): void {
+  const addon = addons.find((item) => item.id === addonId);
+  if (!addon) return;
+  const enabled = isAddonEnabled(addonId);
+  if (enabled && enabledAddons().filter((item) => item.id !== addonId).length === 0) {
+    toast("Keep at least one ready add-on installed");
+    return;
+  }
+  setAddonEnabled(addonId, !enabled);
+  catalogCache.clear();
+  previewCache.clear();
+  clearApiCache();
+  updateAddonBadge();
+  renderAddons();
+  toast(enabled ? `${addon.manifest?.name || addonId} removed from this device` : `${addon.manifest?.name || addonId} installed`);
+}
+
 async function initialize(): Promise<void> {
   renderShell();
   setupPlayerEvents();
   setNetworkBadge(navigator.onLine);
   mainElement().innerHTML = `<section class="boot-screen"><span class="brand-mark large"><span>K</span></span><span class="spinner"></span><p>Opening your screen…</p></section>`;
   try {
-    manifest = await getManifest();
-    const brandName = document.querySelector<HTMLElement>(".brand-copy strong");
-    if (brandName) brandName.textContent = manifest.name || "Kotoko";
+    addons = await getAddons();
+    if (addons.length === 0) throw new Error("Cloudflare returned no configured add-ons.");
+    updateAddonBadge();
     await renderRoute();
   } catch (error) {
     renderErrorState("Kotoko could not connect", error instanceof Error ? error.message : "The add-on is unavailable.", true);
@@ -1062,9 +1364,11 @@ root.addEventListener("click", (event) => {
     rail?.scrollBy({ left: rail.clientWidth * 0.82 * Number(button.dataset.direction ?? "1"), behavior: "smooth" });
   }
   else if (action === "toggle-watchlist") {
-    const meta = currentMeta?.id === button.dataset.id
-      ? currentMeta
-      : previewCache.get(mediaKey(button.dataset.type ?? "", button.dataset.id ?? ""));
+    const addonId = button.dataset.addonId ?? "";
+    const detailMeta = currentMeta;
+    const meta = detailMeta && detailMeta.id === button.dataset.id && (!addonId || detailMeta.addonId === addonId)
+      ? detailMeta
+      : previewCache.get(mediaKey(button.dataset.type ?? "", button.dataset.id ?? "", addonId));
     if (!meta) return;
     const added = toggleWatchlist(meta);
     toast(added ? "Added to My list" : "Removed from My list");
@@ -1074,6 +1378,8 @@ root.addEventListener("click", (event) => {
     applyBackdrops();
     refreshIcons();
   } else if (action === "play") void openPlayer(button.dataset.videoId ?? "");
+  else if (action === "toggle-addon") toggleConfiguredAddon(button.dataset.addonId ?? "");
+  else if (action === "refresh-addons") void refreshAddons();
   else if (action === "close-player") closePlayer();
   else if (action === "select-source") void selectStream(Number(button.dataset.index ?? "-1"));
   else if (action === "try-next") void tryNextSource();

@@ -1,3 +1,7 @@
 # Copy this file to .dev.vars for local Worker development.
 # Keep the real personalized manifest URL out of Git and frontend code.
 KOTOKO_MANIFEST_URL="https://your-authorized-addon.example/path/manifest.json"
+
+# Optional JSON array of up to seven additional approved sources.
+# Keep this value encrypted as a Cloudflare secret in production.
+KOTOKO_ADDONS='[{"id":"second-source","manifestUrl":"https://another-authorized-addon.example/path/manifest.json"}]'

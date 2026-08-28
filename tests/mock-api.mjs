@@ -30,34 +30,40 @@ function json(response, status = 200) {
   return JSON.stringify(response);
 }
 
+const manifest = {
+  id: "test.kotoko",
+  version: "1.0.0",
+  name: "Kotoko",
+  description: "Streams Filipino favorites for the mock catalog.",
+  types: ["movie", "series"],
+  resources: ["catalog", "meta", "stream", "subtitles"],
+  catalogs: [
+    { type: "movie", id: "latest_movies", name: "Tagalog Dubbed Movies", extraSupported: ["skip"] },
+    { type: "series", id: "top_series", name: "Filipino Series", extraSupported: ["skip"] }
+  ]
+};
+
 const server = createServer((request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1:8787");
   response.setHeader("Access-Control-Allow-Origin", "*");
-  if (url.pathname === "/api/manifest") {
+  if (url.pathname === "/api/addons") {
     response.setHeader("Content-Type", "application/json");
-    response.end(
-      json({
-        id: "test.kotoko",
-        version: "1.0.0",
-        name: "Kotoko",
-        types: ["movie", "series"],
-        resources: ["catalog", "meta", "stream", "subtitles"],
-        catalogs: [
-          { type: "movie", id: "latest_movies", name: "Tagalog Dubbed Movies", extraSupported: ["skip"] },
-          { type: "series", id: "top_series", name: "Filipino Series", extraSupported: ["skip"] }
-        ]
-      })
-    );
+    response.end(json({ addons: [{ id: "kotoko", status: "ready", manifest }] }));
     return;
   }
-  if (url.pathname.startsWith("/api/catalog/")) {
+  if (url.pathname === "/api/manifest") {
+    response.setHeader("Content-Type", "application/json");
+    response.end(json(manifest));
+    return;
+  }
+  if (url.pathname.startsWith("/api/addons/kotoko/catalog/")) {
     response.setHeader("Content-Type", "application/json");
     const skip = Number(url.searchParams.get("skip") ?? "0");
     const isSeries = url.pathname.includes("/series/");
     response.end(json({ metas: skip > 0 ? [] : isSeries ? [series, extras[2]] : [movie, ...extras.filter((item) => item.type === "movie")] }));
     return;
   }
-  if (url.pathname.startsWith("/api/meta/")) {
+  if (url.pathname.startsWith("/api/addons/kotoko/meta/")) {
     response.setHeader("Content-Type", "application/json");
     if (url.pathname.includes("tt0000002")) {
       response.end(
@@ -75,7 +81,7 @@ const server = createServer((request, response) => {
     } else response.end(json({ meta: movie }));
     return;
   }
-  if (url.pathname.startsWith("/api/stream/")) {
+  if (url.pathname.startsWith("/api/addons/kotoko/stream/")) {
     response.setHeader("Content-Type", "application/json");
     response.end(
       json({
@@ -88,7 +94,7 @@ const server = createServer((request, response) => {
     );
     return;
   }
-  if (url.pathname.startsWith("/api/subtitles/")) {
+  if (url.pathname.startsWith("/api/addons/kotoko/subtitles/")) {
     response.setHeader("Content-Type", "application/json");
     response.end(json({ subtitles: [] }));
     return;

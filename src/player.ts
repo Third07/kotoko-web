@@ -37,6 +37,32 @@ export function looksLikeHls(stream: StreamItem): boolean {
   return source.includes(".m3u8") || source.includes("application/vnd.apple.mpegurl");
 }
 
+function streamExtension(stream: StreamItem): string {
+  const value = `${stream.behaviorHints?.filename ?? ""} ${stream.url ?? ""}`.toLowerCase();
+  return value.match(/\.(m3u8|mp4|m4v|webm|mkv|mov|avi|ogv)(?:[?#.\s]|$)/)?.[1] ?? "";
+}
+
+export function webPlaybackScore(stream: StreamItem): number {
+  if (getStreamKind(stream) !== "direct") return stream.externalUrl ? 20 : -1000;
+  if (stream.behaviorHints?.notWebReady || stream.behaviorHints?.proxyHeaders?.request) return -900;
+
+  const extension = streamExtension(stream);
+  let score = looksLikeHls(stream) ? 600 : extension === "mp4" || extension === "m4v" ? 540 : extension === "webm" ? 500 : extension === "mkv" ? 360 : 420;
+  const size = stream.behaviorHints?.videoSize ?? 0;
+  if (size > 0) {
+    const gibibytes = size / 1024 ** 3;
+    score -= Math.min(220, Math.max(0, gibibytes - 0.2) * 90);
+  }
+  return score;
+}
+
+export function sortStreamsForWeb(streams: StreamItem[]): StreamItem[] {
+  return streams
+    .map((stream, index) => ({ stream, index, score: webPlaybackScore(stream) }))
+    .sort((first, second) => second.score - first.score || first.index - second.index)
+    .map(({ stream }) => stream);
+}
+
 function safeFilename(value: string): string {
   const normalized = value
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
@@ -110,8 +136,25 @@ export class MediaPlayer {
 
     video.replaceChildren();
     video.removeAttribute("src");
+    video.preload = "auto";
     video.load();
     onStatus("loading");
+
+    try {
+      const origin = new URL(sourceUrl).origin;
+      const connected = [...document.head.querySelectorAll<HTMLLinkElement>("link[data-media-origin]")].some(
+        (link) => link.dataset.mediaOrigin === origin
+      );
+      if (!connected) {
+        const link = document.createElement("link");
+        link.rel = "preconnect";
+        link.href = origin;
+        link.dataset.mediaOrigin = origin;
+        document.head.append(link);
+      }
+    } catch {
+      // URL validation is handled by the caller; preconnect is only an optimization.
+    }
 
     for (const [index, subtitle] of subtitles.entries()) {
       const url = safeTrackUrl(subtitle.url);
@@ -174,7 +217,9 @@ export class MediaPlayer {
       this.hls = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
-        backBufferLength: 90
+        backBufferLength: 90,
+        capLevelToPlayerSize: true,
+        startFragPrefetch: true
       });
       let networkRecoveries = 0;
       let mediaRecoveries = 0;

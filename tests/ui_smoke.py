@@ -15,6 +15,13 @@ with sync_playwright() as playwright:
     assert page.locator(".mobile-nav a").count() == 5
     page.screenshot(path=str(screenshot), full_page=True)
 
+    page.goto("http://127.0.0.1:5173/#/addons", wait_until="networkidle")
+    page.get_by_role("heading", name="Your projection room").wait_for()
+    page.get_by_role("heading", name="Kotoko").wait_for()
+    page.get_by_text("1 active source", exact=True).wait_for()
+    assert page.get_by_role("button", name="Remove").is_disabled()
+
+    page.goto("http://127.0.0.1:5173/#/home", wait_until="networkidle")
     page.get_by_role("link", name="View Isla Nights").first.click()
     page.get_by_role("heading", name="Isla Nights", exact=True).wait_for()
     page.get_by_role("button", name="My list").click()
@@ -31,7 +38,8 @@ with sync_playwright() as playwright:
 
     page.get_by_role("button", name="Play").click()
     page.locator("#player-dialog[open]").wait_for()
-    page.get_by_role("button", name="Kotoko HD 1080p File").wait_for()
+    page.locator('[data-action="select-source"]', has_text="Kotoko HD").wait_for()
+    page.get_by_text("via Kotoko", exact=True).first.wait_for()
     page.get_by_role("link", name="Download file").wait_for()
     assert page.get_by_role("button", name="Next").is_enabled()
     page.get_by_role("button", name="Next").click()

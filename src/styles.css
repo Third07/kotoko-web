@@ -94,7 +94,7 @@ select:focus-visible {
   top: 0;
   left: 0;
   display: grid;
-  grid-template-columns: auto 1fr minmax(220px, 340px) auto;
+  grid-template-columns: auto 1fr minmax(220px, 340px) auto auto;
   align-items: center;
   gap: 26px;
   width: 100%;
@@ -248,6 +248,50 @@ select:focus-visible {
 
 .network-badge.is-offline {
   color: var(--sun);
+}
+
+.addon-badge {
+  position: relative;
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(94, 224, 194, 0.2);
+  border-radius: 999px;
+  background: rgba(94, 224, 194, 0.07);
+  color: var(--teal);
+  padding: 0 8px 0 10px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.addon-badge:hover,
+.addon-badge.is-active {
+  border-color: rgba(245, 196, 81, 0.42);
+  color: var(--sun);
+}
+
+.addon-badge.has-warning {
+  border-color: rgba(245, 196, 81, 0.3);
+  color: var(--sun);
+}
+
+.addon-badge svg {
+  width: 14px;
+}
+
+.addon-badge strong {
+  display: grid;
+  min-width: 19px;
+  height: 19px;
+  place-items: center;
+  border-radius: 50%;
+  background: currentColor;
+  color: var(--ink);
+  font-size: 9px;
+  letter-spacing: normal;
 }
 
 #main-content {
@@ -973,6 +1017,290 @@ select:focus-visible {
   margin-top: 70px;
 }
 
+.source-library-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 15px;
+  margin: -10px 0 50px;
+  border: 1px solid rgba(94, 224, 194, 0.2);
+  border-radius: 17px;
+  background: linear-gradient(110deg, rgba(94, 224, 194, 0.09), rgba(255, 82, 115, 0.05));
+  padding: 15px 17px;
+}
+
+.source-library-card:hover {
+  border-color: rgba(245, 196, 81, 0.35);
+  transform: translateY(-1px);
+}
+
+.source-library-icon {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  border-radius: 14px;
+  background: rgba(94, 224, 194, 0.11);
+  color: var(--teal);
+}
+
+.source-library-icon svg,
+.source-library-card > svg {
+  width: 19px;
+}
+
+.source-library-card > span:nth-child(2) {
+  display: grid;
+}
+
+.source-library-card small,
+.source-library-card em {
+  color: var(--mist);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.source-library-card small {
+  color: var(--sun);
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.source-library-card strong {
+  margin: 2px 0;
+  font-family: "Sora Variable", sans-serif;
+  font-size: 15px;
+}
+
+.addons-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.addons-heading .secondary-button {
+  flex: 0 0 auto;
+  margin-bottom: 40px;
+}
+
+.addon-tally {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 150px));
+  gap: 8px;
+  margin: -10px 0 26px;
+}
+
+.addon-tally > span {
+  display: grid;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 13px 15px;
+}
+
+.addon-tally strong {
+  font-family: "Sora Variable", sans-serif;
+  font-size: 25px;
+  letter-spacing: -0.05em;
+}
+
+.addon-tally small {
+  color: var(--mist);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.addon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+  gap: 14px;
+}
+
+.addon-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 17px;
+  overflow: hidden;
+  border: 1px solid rgba(94, 224, 194, 0.2);
+  border-radius: 19px;
+  background:
+    radial-gradient(circle at 0 0, rgba(94, 224, 194, 0.09), transparent 14rem),
+    rgba(12, 22, 34, 0.78);
+  padding: 17px;
+  box-shadow: 0 18px 55px rgba(0, 0, 0, 0.2);
+}
+
+.addon-card::after {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 56px;
+  height: 8px;
+  background: repeating-linear-gradient(90deg, transparent 0 5px, rgba(247, 242, 232, 0.24) 5px 8px);
+  content: "";
+}
+
+.addon-card.is-removed {
+  border-color: var(--line);
+  filter: saturate(0.62);
+  opacity: 0.76;
+}
+
+.addon-card.is-offline {
+  border-color: rgba(245, 196, 81, 0.24);
+}
+
+.addon-reel {
+  position: relative;
+  display: grid;
+  width: 72px;
+  height: 72px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(247, 242, 232, 0.18);
+  border-radius: 50%;
+  background: #09131f;
+  color: var(--pearl);
+  font-family: "Sora Variable", sans-serif;
+  font-size: 27px;
+  font-weight: 800;
+  box-shadow: inset 0 0 0 8px rgba(247, 242, 232, 0.035);
+}
+
+.addon-reel::after {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 5px dotted rgba(247, 242, 232, 0.24);
+  border-radius: 50%;
+  content: "";
+}
+
+.addon-reel img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.addon-card-copy {
+  min-width: 0;
+}
+
+.addon-card-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--teal);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.status-light {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 4px rgba(94, 224, 194, 0.08);
+}
+
+.addon-card.is-offline .addon-card-status {
+  color: var(--sun);
+}
+
+.addon-card h2 {
+  margin: 5px 0 6px;
+  font-family: "Sora Variable", sans-serif;
+  font-size: 20px;
+  letter-spacing: -0.045em;
+}
+
+.addon-card-copy > p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--mist);
+  font-size: 11px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.addon-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 11px;
+}
+
+.addon-facts span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--mist);
+  padding: 4px 7px;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.addon-card-footer {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 13px;
+}
+
+.addon-card-footer small {
+  color: var(--mist);
+  font-size: 8px;
+}
+
+.addon-card-footer .secondary-button {
+  min-height: 38px;
+  padding: 0 12px;
+  font-size: 10px;
+}
+
+.addon-admin-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 22px;
+  border: 1px solid rgba(245, 196, 81, 0.22);
+  border-radius: 14px;
+  background: rgba(245, 196, 81, 0.055);
+  padding: 13px 15px;
+  color: var(--mist);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.addon-admin-note span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.addon-admin-note svg {
+  flex: 0 0 auto;
+  width: 17px;
+  color: var(--sun);
+}
+
+.addon-admin-note strong,
+.addon-admin-note code {
+  color: var(--pearl);
+}
+
 .danger-button {
   border: 1px solid rgba(240, 68, 112, 0.35);
   border-radius: 10px;
@@ -1396,6 +1724,11 @@ select:focus-visible {
   font-size: 8px;
 }
 
+.source-button .source-origin {
+  color: var(--sun);
+  font-weight: 800;
+}
+
 .source-button em {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.09);
@@ -1460,13 +1793,14 @@ select:focus-visible {
   }
 
   .topbar {
-    grid-template-columns: auto 1fr auto;
+    grid-template-columns: auto 1fr auto auto;
     gap: 16px;
     padding: 12px 20px;
   }
 
   .desktop-nav,
-  .network-badge span {
+  .network-badge span,
+  .addon-badge span {
     display: none;
   }
 
@@ -1494,7 +1828,7 @@ select:focus-visible {
   }
 
   .topbar {
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto 1fr auto;
     min-height: 68px;
     padding: 10px 15px;
   }
@@ -1512,6 +1846,18 @@ select:focus-visible {
   .search-form {
     width: 100%;
     height: 44px;
+  }
+
+  .addon-badge {
+    width: 40px;
+    min-height: 40px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .addon-badge strong {
+    position: absolute;
+    margin: -27px -27px 0 0;
   }
 
   #main-content {
@@ -1656,6 +2002,52 @@ select:focus-visible {
   .search-controls {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .addons-heading {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .addons-heading .secondary-button {
+    width: 100%;
+    margin: -8px 0 24px;
+  }
+
+  .addon-tally {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .addon-tally > span {
+    padding: 11px;
+  }
+
+  .addon-card {
+    grid-template-columns: 58px 1fr;
+    gap: 13px;
+    padding: 14px;
+  }
+
+  .addon-reel {
+    width: 58px;
+    height: 58px;
+    font-size: 22px;
+  }
+
+  .addon-card-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .addon-card-footer .danger-button,
+  .addon-card-footer .secondary-button {
+    width: 100%;
+    min-height: 42px;
+  }
+
+  .addon-admin-note span {
+    align-items: flex-start;
   }
 
   .sort-control {

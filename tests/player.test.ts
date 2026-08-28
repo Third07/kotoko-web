@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getDownloadInfo, getStreamKind, looksLikeHls } from "../src/player";
+import { getDownloadInfo, getStreamKind, looksLikeHls, sortStreamsForWeb } from "../src/player";
 
 describe("stream capabilities", () => {
   it("offers a browser download for a direct media file", () => {
@@ -29,5 +29,15 @@ describe("stream capabilities", () => {
         behaviorHints: { proxyHeaders: { request: { Authorization: "private" } } }
       })
     ).toBeNull();
+  });
+
+  it("prefers adaptive and smaller browser-friendly streams over a large MKV", () => {
+    const ranked = sortStreamsForWeb([
+      { name: "Large MKV", url: "https://media.example/video.mkv", behaviorHints: { videoSize: 2_147_483_648 } },
+      { name: "MP4", url: "https://media.example/video.mp4", behaviorHints: { videoSize: 734_003_200 } },
+      { name: "Adaptive", url: "https://media.example/master.m3u8" }
+    ]);
+
+    expect(ranked.map((stream) => stream.name)).toEqual(["Adaptive", "MP4", "Large MKV"]);
   });
 });

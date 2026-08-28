@@ -8,6 +8,8 @@ export interface AddonCatalog {
   type: "movie" | "series";
   id: string;
   name: string;
+  addonId?: string;
+  addonName?: string;
   extra?: CatalogExtra[];
   extraSupported?: string[];
 }
@@ -21,6 +23,13 @@ export interface AddonManifest {
   catalogs: AddonCatalog[];
   resources: unknown[];
   types: string[];
+}
+
+export interface AddonSource {
+  id: string;
+  status: "ready" | "offline";
+  manifest?: AddonManifest;
+  error?: string;
 }
 
 export interface VideoItem {
@@ -39,6 +48,8 @@ export interface MetaItem {
   id: string;
   type: "movie" | "series";
   name: string;
+  addonId?: string;
+  addonName?: string;
   poster?: string;
   background?: string;
   logo?: string;
@@ -52,6 +63,8 @@ export interface MetaItem {
 }
 
 export interface StreamItem {
+  addonId?: string;
+  addonName?: string;
   name?: string;
   title?: string;
   description?: string;

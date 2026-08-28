@@ -4,6 +4,7 @@ const WATCHLIST_KEY = "kotoko.watchlist.v1";
 const HISTORY_KEY = "kotoko.history.v1";
 const LAST_STREAM_KEY = "kotoko.lastStream.v1";
 const PLAYER_SETTINGS_KEY = "kotoko.playerSettings.v1";
+const DISABLED_ADDONS_KEY = "kotoko.disabledAddons.v1";
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -82,4 +83,21 @@ export function getPlayerSettings(): PlayerSettings {
 
 export function savePlayerSettings(settings: PlayerSettings): void {
   writeJson(PLAYER_SETTINGS_KEY, settings);
+}
+
+export function getDisabledAddonIds(): string[] {
+  return readJson<unknown[]>(DISABLED_ADDONS_KEY, []).filter(
+    (value): value is string => typeof value === "string" && /^[a-z0-9][a-z0-9_-]{0,39}$/.test(value)
+  );
+}
+
+export function isAddonEnabled(id: string): boolean {
+  return !getDisabledAddonIds().includes(id);
+}
+
+export function setAddonEnabled(id: string, enabled: boolean): void {
+  const disabled = new Set(getDisabledAddonIds());
+  if (enabled) disabled.delete(id);
+  else disabled.add(id);
+  writeJson(DISABLED_ADDONS_KEY, [...disabled]);
 }

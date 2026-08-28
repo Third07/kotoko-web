@@ -1,5 +1,6 @@
 import type {
   AddonManifest,
+  AddonSource,
   ApiErrorPayload,
   MetaItem,
   StreamItem,
@@ -39,7 +40,17 @@ export function getManifest(): Promise<AddonManifest> {
   return requestJson<AddonManifest>("/api/manifest", 2 * 60_000);
 }
 
+export async function getAddons(): Promise<AddonSource[]> {
+  const payload = await requestJson<{ addons?: AddonSource[] }>("/api/addons", 60_000);
+  return Array.isArray(payload.addons) ? payload.addons : [];
+}
+
+function addonResourcePath(addonId: string, resource: string, type: string, id: string): string {
+  return `/api/addons/${encodeURIComponent(addonId)}/${resource}/${encodeURIComponent(type)}/${encodeURIComponent(id)}`;
+}
+
 export async function getCatalog(
+  addonId: string,
   type: string,
   id: string,
   extras: Record<string, string | number> = {}
@@ -48,32 +59,32 @@ export async function getCatalog(
   for (const [key, value] of Object.entries(extras)) params.set(key, String(value));
   const query = params.size > 0 ? `?${params.toString()}` : "";
   const payload = await requestJson<{ metas?: MetaItem[] }>(
-    `/api/catalog/${encodeURIComponent(type)}/${encodeURIComponent(id)}${query}`,
+    `${addonResourcePath(addonId, "catalog", type, id)}${query}`,
     5 * 60_000
   );
   return Array.isArray(payload.metas) ? payload.metas : [];
 }
 
-export async function getMeta(type: string, id: string): Promise<MetaItem> {
+export async function getMeta(addonId: string, type: string, id: string): Promise<MetaItem> {
   const payload = await requestJson<{ meta?: MetaItem }>(
-    `/api/meta/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
+    addonResourcePath(addonId, "meta", type, id),
     30 * 60_000
   );
   if (!payload.meta) throw new Error("Details are not available for this title.");
   return payload.meta;
 }
 
-export async function getStreams(type: string, videoId: string): Promise<StreamItem[]> {
+export async function getStreams(addonId: string, type: string, videoId: string): Promise<StreamItem[]> {
   const payload = await requestJson<{ streams?: StreamItem[] }>(
-    `/api/stream/${encodeURIComponent(type)}/${encodeURIComponent(videoId)}`,
+    addonResourcePath(addonId, "stream", type, videoId),
     10_000
   );
   return Array.isArray(payload.streams) ? payload.streams : [];
 }
 
-export async function getSubtitles(type: string, videoId: string): Promise<SubtitleItem[]> {
+export async function getSubtitles(addonId: string, type: string, videoId: string): Promise<SubtitleItem[]> {
   const payload = await requestJson<{ subtitles?: SubtitleItem[] }>(
-    `/api/subtitles/${encodeURIComponent(type)}/${encodeURIComponent(videoId)}`,
+    addonResourcePath(addonId, "subtitles", type, videoId),
     2 * 60_000
   );
   return Array.isArray(payload.subtitles) ? payload.subtitles : [];
